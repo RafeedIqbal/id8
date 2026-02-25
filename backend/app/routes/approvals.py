@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db
+from app.db import async_session, get_db
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
 from app.models.project_run import ProjectRun
+from app.orchestrator import run_orchestrator
 from app.schemas.approval import ApprovalEventResponse, ApprovalRequest
 
 router = APIRouter(tags=["approvals"])
@@ -32,6 +33,13 @@ _STAGE_TO_APPROVED_STATUS: dict[ApprovalStage, ProjectStatus] = {
 }
 
 
+async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
+    """Fire-and-forget wrapper that opens its own DB session."""
+    async with async_session() as db:
+        await run_orchestrator(run_id, db)
+        await db.commit()
+
+
 @router.post(
     "/projects/{projectId}/approvals",
     operation_id="submitApproval",
@@ -39,6 +47,7 @@ _STAGE_TO_APPROVED_STATUS: dict[ApprovalStage, ProjectStatus] = {
 )
 async def submit_approval(
     body: ApprovalRequest,
+    background_tasks: BackgroundTasks,
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalEvent:
@@ -84,6 +93,7 @@ async def submit_approval(
     await db.commit()
     await db.refresh(event)
 
-    # TODO: notify orchestrator to resume run
+    # Resume the parked orchestrator run
+    background_tasks.add_task(_run_orchestrator_background, run.id)
 
     return event

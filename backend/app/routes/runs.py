@@ -2,23 +2,32 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db
+from app.db import async_session, get_db
 from app.dependencies.idempotency import get_idempotency_key
 from app.models.enums import ProjectStatus
 from app.models.project import Project
 from app.models.project_run import ProjectRun
+from app.orchestrator import ALL_NODE_NAMES, run_orchestrator
 from app.schemas.run import CreateRunRequest, ProjectRunResponse
 
 router = APIRouter(tags=["runs"])
 
 
+async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
+    """Fire-and-forget wrapper that opens its own DB session."""
+    async with async_session() as db:
+        await run_orchestrator(run_id, db)
+        await db.commit()
+
+
 @router.post("/projects/{projectId}/runs", operation_id="createRun", response_model=ProjectRunResponse, status_code=202)
 async def create_run(
+    background_tasks: BackgroundTasks,
     project_id: uuid.UUID = Path(alias="projectId"),
     body: CreateRunRequest | None = None,
     idempotency_key: str | None = Depends(get_idempotency_key),
@@ -49,6 +58,9 @@ async def create_run(
 
     start_node = "IngestPrompt"
     if body and body.resume_from_node:
+        # Validate the requested resume node exists
+        if body.resume_from_node not in ALL_NODE_NAMES:
+            raise HTTPException(status_code=422, detail=f"Unknown node: {body.resume_from_node}")
         start_node = body.resume_from_node
 
     run = ProjectRun(
@@ -72,6 +84,7 @@ async def create_run(
         raise HTTPException(status_code=409, detail="Idempotency-Key already used for a different project") from exc
     await db.refresh(run)
 
-    # TODO: enqueue run for worker/orchestrator processing
+    # Enqueue orchestrator processing as a background task
+    background_tasks.add_task(_run_orchestrator_background, run.id)
 
     return run

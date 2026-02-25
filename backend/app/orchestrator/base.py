@@ -1,0 +1,47 @@
+"""Base types for orchestrator node handlers.
+
+Defines the ``RunContext`` that is passed into every handler, the
+``NodeResult`` that every handler must return, and the abstract
+``NodeHandler`` interface.
+"""
+from __future__ import annotations
+
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(slots=True)
+class RunContext:
+    """Immutable snapshot of state passed to each node handler."""
+
+    run_id: uuid.UUID
+    project_id: uuid.UUID
+    current_node: str
+    attempt: int
+    db: AsyncSession
+
+
+@dataclass(slots=True)
+class NodeResult:
+    """Value returned by a node handler after execution.
+
+    * ``outcome`` drives the transition table (e.g. "success", "approved").
+    * ``artifact_data`` is optional JSONB content to persist as a ProjectArtifact.
+    * ``error`` is an optional message stored on the run when the node fails.
+    """
+
+    outcome: str
+    artifact_data: dict[str, Any] | None = field(default=None)
+    error: str | None = field(default=None)
+
+
+class NodeHandler(ABC):
+    """Contract that every node handler must implement."""
+
+    @abstractmethod
+    async def execute(self, context: RunContext) -> NodeResult:
+        """Execute the node logic and return the result."""

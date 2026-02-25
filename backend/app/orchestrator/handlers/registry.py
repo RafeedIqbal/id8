@@ -1,0 +1,38 @@
+"""Handler registry — maps each NodeName to its concrete NodeHandler."""
+from __future__ import annotations
+
+from app.orchestrator.base import NodeHandler
+from app.orchestrator.handlers.approvals import WaitApprovalHandler
+from app.orchestrator.handlers.stubs import (
+    DeployProductionHandler,
+    EndFailedHandler,
+    EndSuccessHandler,
+    GenerateDesignHandler,
+    GeneratePRDHandler,
+    GenerateTechPlanHandler,
+    IngestPromptHandler,
+    PreparePRHandler,
+    SecurityGateHandler,
+    WriteCodeHandler,
+)
+from app.orchestrator.nodes import NodeName
+
+# Shared instance for all wait nodes.
+_wait_handler = WaitApprovalHandler()
+
+HANDLER_REGISTRY: dict[str, NodeHandler] = {
+    NodeName.INGEST_PROMPT: IngestPromptHandler(),
+    NodeName.GENERATE_PRD: GeneratePRDHandler(),
+    NodeName.WAIT_PRD_APPROVAL: _wait_handler,
+    NodeName.GENERATE_DESIGN: GenerateDesignHandler(),
+    NodeName.WAIT_DESIGN_APPROVAL: _wait_handler,
+    NodeName.GENERATE_TECH_PLAN: GenerateTechPlanHandler(),
+    NodeName.WAIT_TECH_PLAN_APPROVAL: _wait_handler,
+    NodeName.WRITE_CODE: WriteCodeHandler(),
+    NodeName.SECURITY_GATE: SecurityGateHandler(),
+    NodeName.PREPARE_PR: PreparePRHandler(),
+    NodeName.WAIT_DEPLOY_APPROVAL: _wait_handler,
+    NodeName.DEPLOY_PRODUCTION: DeployProductionHandler(),
+    NodeName.END_SUCCESS: EndSuccessHandler(),
+    NodeName.END_FAILED: EndFailedHandler(),
+}
