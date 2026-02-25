@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     # Database
     database_url: str = "postgresql+asyncpg://id8:id8@localhost:5432/id8"
@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
 
     # GitHub
+    github_token: str = ""
     github_app_id: str = ""
     github_app_private_key: str = ""
 
