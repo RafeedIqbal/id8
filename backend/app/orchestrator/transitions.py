@@ -13,7 +13,10 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
     NodeName.INGEST_PROMPT: {"success": NodeName.GENERATE_PRD},
     NodeName.GENERATE_PRD: {"success": NodeName.WAIT_PRD_APPROVAL},
     NodeName.WAIT_PRD_APPROVAL: {"approved": NodeName.GENERATE_DESIGN, "rejected": NodeName.GENERATE_PRD},
-    NodeName.GENERATE_DESIGN: {"success": NodeName.WAIT_DESIGN_APPROVAL},
+    NodeName.GENERATE_DESIGN: {
+        "success": NodeName.WAIT_DESIGN_APPROVAL,
+        "failure": NodeName.END_FAILED,
+    },
     NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.GENERATE_TECH_PLAN, "rejected": NodeName.GENERATE_DESIGN},
     NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL},
     NodeName.WAIT_TECH_PLAN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_TECH_PLAN},
@@ -34,13 +37,18 @@ def resolve_next_node(current_node: str, outcome: str) -> str:
 
     Raises ``InvalidTransitionError`` if the combination is not in the table.
     """
-    outcomes = TRANSITIONS.get(current_node)
+    try:
+        node = NodeName(current_node)
+    except ValueError as exc:
+        raise InvalidTransitionError(f"No transitions defined for node '{current_node}'") from exc
+
+    outcomes = TRANSITIONS.get(node)
     if outcomes is None:
         raise InvalidTransitionError(f"No transitions defined for node '{current_node}'")
     next_node = outcomes.get(outcome)
     if next_node is None:
         raise InvalidTransitionError(f"No transition for node '{current_node}' with outcome '{outcome}'")
-    return next_node
+    return str(next_node)
 
 
 # Backwards compatibility for older imports.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.db import get_db
+from app.design.base import DesignOutput, Screen
 from app.main import create_app
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ArtifactType, ModelProfile, ProjectStatus
@@ -258,12 +260,21 @@ class TestGenerateDesign:
         seed_project.status = ProjectStatus.PRD_APPROVED
         await db.flush()
 
-        body = {"provider": "stitch_mcp", "model_profile": "primary"}
+        body = {
+            "provider": "stitch_mcp",
+            "model_profile": "primary",
+            "stitch_auth": {
+                "auth_method": "api_key",
+                "api_key": "secret-api-key-123",
+            },
+        }
         resp = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body)
         assert resp.status_code == 202
         data = resp.json()
         assert data["artifact"]["artifact_type"] == "design_spec"
         assert data["artifact"]["version"] == 1
+        assert data["artifact"]["content"]["stitch_auth_method"] == "api_key"
+        assert "stitch_auth" not in data["artifact"]["content"]
 
     @pytest.mark.asyncio
     async def test_invalid_status_returns_409(
@@ -286,13 +297,40 @@ class TestDesignFeedback:
         self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
     ) -> None:
         seed_project.status = ProjectStatus.DESIGN_DRAFT
+        prior = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.DESIGN_SPEC,
+            version=1,
+            content={
+                "screens": [{"id": "screen-1", "name": "Dashboard", "components": [], "assets": []}],
+                "__design_metadata": {
+                    "provider_used": "internal_spec",
+                    "usable_tools": ["x"],
+                },
+            },
+            model_profile=ModelProfile.CUSTOMTOOLS,
+        )
+        db.add(prior)
         await db.flush()
 
         body = {"feedback_text": "Make the header bigger"}
-        resp = await client.post(f"/v1/projects/{seed_project.id}/design/feedback", json=body)
+        regenerated = DesignOutput(
+            screens=[Screen(id="screen-1", name="Dashboard V2")],
+            metadata={"provider": "internal_spec", "generation_time_ms": 12.3},
+        )
+        with patch(
+            "app.routes.design.regenerate_with_fallback",
+            new=AsyncMock(return_value=(regenerated, "internal_spec")),
+        ):
+            resp = await client.post(f"/v1/projects/{seed_project.id}/design/feedback", json=body)
+
         assert resp.status_code == 202
         data = resp.json()
-        assert data["artifact"]["content"]["feedback"] == "Make the header bigger"
+        assert data["artifact"]["version"] == 2
+        assert data["artifact"]["content"]["screens"][0]["name"] == "Dashboard V2"
+        assert data["artifact"]["content"]["__design_metadata"]["feedback_text"] == "Make the header bigger"
+        assert data["artifact"]["content"]["__design_metadata"]["usable_tools"] == ["x"]
 
     @pytest.mark.asyncio
     async def test_wrong_status_returns_409(
@@ -301,6 +339,22 @@ class TestDesignFeedback:
         body = {"feedback_text": "Make the header bigger"}
         resp = await client.post(f"/v1/projects/{seed_project.id}/design/feedback", json=body)
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/design/tools — listDesignTools
+# ---------------------------------------------------------------------------
+
+
+class TestDesignTools:
+    @pytest.mark.asyncio
+    async def test_lists_stitch_tools(self, client: AsyncClient) -> None:
+        resp = await client.get("/v1/design/tools")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "stitch_mcp"
+        names = {tool["name"] for tool in data["usable_tools"]}
+        assert "generate_screen_from_text" in names
 
 
 # ---------------------------------------------------------------------------

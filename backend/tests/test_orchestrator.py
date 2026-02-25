@@ -62,6 +62,27 @@ _VALID_PRD_JSON = json.dumps(
     }
 )
 
+_VALID_DESIGN_JSON = json.dumps(
+    {
+        "screens": [
+            {
+                "id": "screen-1",
+                "name": "Dashboard",
+                "description": "Main dashboard screen",
+                "components": [
+                    {
+                        "id": "comp-1",
+                        "name": "TaskList",
+                        "type": "table",
+                        "properties": {},
+                    }
+                ],
+                "assets": [],
+            }
+        ]
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -96,6 +117,22 @@ def mock_generate_prd_llm() -> None:
         yield
 
 
+@pytest.fixture(autouse=True)
+def mock_generate_design_llm() -> None:
+    """Avoid external LLM dependency for internal design generation."""
+    mock = AsyncMock(
+        return_value=LlmResponse(
+            content=_VALID_DESIGN_JSON,
+            token_usage=TokenUsage(prompt_tokens=12, completion_tokens=34),
+            model_id="mock-gemini-design",
+            latency_ms=1.0,
+            profile_used=ModelProfile.CUSTOMTOOLS,
+        )
+    )
+    with patch("app.design.internal_spec._generate_with_fallback", mock):
+        yield
+
+
 @pytest_asyncio.fixture
 async def seed_user(db: AsyncSession) -> User:
     user = User(id=_SCAFFOLD_USER_ID, email="test-orch@id8.local", role="operator")
@@ -126,6 +163,23 @@ async def seed_run(db: AsyncSession, seed_project: Project) -> ProjectRun:
     db.add(run)
     await db.flush()
     return run
+
+
+async def _seed_internal_design_pending(db: AsyncSession, run: ProjectRun, version: int = 1) -> None:
+    db.add(
+        ProjectArtifact(
+            project_id=run.project_id,
+            run_id=run.id,
+            artifact_type="design_spec",
+            version=version,
+            content={
+                "status": "pending",
+                "provider": "internal_spec",
+            },
+            model_profile=ModelProfile.CUSTOMTOOLS,
+        )
+    )
+    await db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +253,7 @@ class TestApprovalResumesRun:
         )
         db.add(approval)
         await db.flush()
+        await _seed_internal_design_pending(db, seed_run)
 
         # Resume
         await run_orchestrator(seed_run.id, db)
@@ -274,6 +329,7 @@ class TestFullHappyPath:
 
         # First run parks at WaitPRDApproval
         await run_orchestrator(seed_run.id, db)
+        await _seed_internal_design_pending(db, seed_run)
 
         for stage, expected_wait in stages:
             await db.refresh(seed_run)
@@ -497,6 +553,24 @@ class TestResumeFromFailure:
         )
         db.add(run)
         await db.flush()
+        db.add(
+            ProjectArtifact(
+                project_id=seed_project.id,
+                run_id=run.id,
+                artifact_type="prd",
+                version=1,
+                content={
+                    "__node_name": "GeneratePRD",
+                    "executive_summary": "A lightweight todo app.",
+                    "user_stories": [
+                        {"persona": "User", "action": "create tasks", "benefit": "track work"},
+                    ],
+                    "entity_list": [{"name": "Task", "description": "A unit of work"}],
+                },
+                model_profile=ModelProfile.PRIMARY,
+            )
+        )
+        await _seed_internal_design_pending(db, run)
 
         await run_orchestrator(run.id, db)
         await db.refresh(run)

@@ -9,14 +9,6 @@ from app.models.enums import ArtifactType
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 
-class GenerateDesignHandler(NodeHandler):
-    async def execute(self, ctx: RunContext) -> NodeResult:
-        return NodeResult(
-            outcome="success",
-            artifact_data={"title": "Placeholder Design Spec", "components": [], "source": "stub"},
-        )
-
-
 class GenerateTechPlanHandler(NodeHandler):
     async def execute(self, ctx: RunContext) -> NodeResult:
         return NodeResult(
