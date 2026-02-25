@@ -6,11 +6,11 @@ from app.orchestrator.handlers.approvals import WaitApprovalHandler
 from app.orchestrator.handlers.generate_design import GenerateDesignHandler
 from app.orchestrator.handlers.generate_prd import GeneratePRDHandler
 from app.orchestrator.handlers.ingest_prompt import IngestPromptHandler
+from app.orchestrator.handlers.generate_tech_plan import GenerateTechPlanHandler
 from app.orchestrator.handlers.stubs import (
     DeployProductionHandler,
     EndFailedHandler,
     EndSuccessHandler,
-    GenerateTechPlanHandler,
     PreparePRHandler,
     SecurityGateHandler,
     WriteCodeHandler,
