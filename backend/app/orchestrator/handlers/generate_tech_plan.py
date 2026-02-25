@@ -14,7 +14,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models.approval_event import ApprovalEvent
-from app.models.enums import ApprovalStage
+from app.models.enums import ApprovalStage, ArtifactType
+from app.models.project_artifact import ProjectArtifact
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.generate_tech_plan")
@@ -37,25 +38,38 @@ class GenerateTechPlanHandler(NodeHandler):
         from app.llm.prompts.tech_plan_generation import build_prompts
         from app.llm.router import resolve_profile
 
-        # 1. Verify we have the required PRD artifact
-        prd = ctx.previous_artifacts.get("prd")
+        # 1. Verify we have the required approved inputs.
+        prd = _clean_artifact_content(ctx.previous_artifacts.get("prd"))
         if not prd:
             return NodeResult(
                 outcome="failure",
                 error="No approved PRD artifact available",
             )
+        design = _clean_artifact_content(ctx.previous_artifacts.get("design_spec"))
+        if not design:
+            return NodeResult(
+                outcome="failure",
+                error="No approved design artifact available",
+            )
 
         # 2. Check for rejection feedback (re-generation case)
         feedback = await _load_rejection_feedback(ctx)
 
+        # 3. Capture artifact lineage for traceability.
+        source_artifacts = await _load_source_artifact_references(ctx)
+
         # 3. Build prompts
         profile = resolve_profile(ctx.current_node)
         system_prompt, user_prompt = build_prompts(
-            previous_artifacts=ctx.previous_artifacts,
+            previous_artifacts={
+                **ctx.previous_artifacts,
+                "prd": prd,
+                "design_spec": design,
+            },
             feedback=feedback,
         )
 
-        # 4. Call LLM with retry on parse failure
+        # 4. Call LLM with retry on parse failure.
         last_error: str | None = None
         for attempt in range(_MAX_PARSE_RETRIES + 1):
             effective_system = system_prompt
@@ -76,6 +90,10 @@ class GenerateTechPlanHandler(NodeHandler):
             # 5. Parse and validate
             plan_data, parse_error = _parse_tech_plan_response(llm_response.content)
             if plan_data is not None:
+                plan_data["__tech_plan_metadata"] = {
+                    "source_artifacts": source_artifacts,
+                    "rejection_feedback": feedback or "",
+                }
                 logger.info(
                     "Generated tech plan for project=%s (attempt=%d, model=%s)",
                     ctx.project_id,
@@ -112,7 +130,7 @@ async def _load_rejection_feedback(ctx: RunContext) -> str | None:
     result = await ctx.db.execute(
         select(ApprovalEvent)
         .where(
-            ApprovalEvent.project_id == ctx.project_id,
+            ApprovalEvent.run_id == ctx.run_id,
             ApprovalEvent.stage == ApprovalStage.TECH_PLAN,
             ApprovalEvent.decision == "rejected",
         )
@@ -123,6 +141,41 @@ async def _load_rejection_feedback(ctx: RunContext) -> str | None:
     if event is not None and event.notes:
         return event.notes
     return None
+
+
+def _clean_artifact_content(raw: Any) -> dict[str, Any]:
+    """Return a metadata-stripped artifact dict or ``{}`` when invalid."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if not k.startswith("__")}
+
+
+async def _load_source_artifact_references(ctx: RunContext) -> dict[str, dict[str, Any]]:
+    """Return PRD + design artifact references used in this run."""
+    refs: dict[str, dict[str, Any]] = {}
+
+    for key, artifact_type in (
+        ("prd", ArtifactType.PRD),
+        ("design_spec", ArtifactType.DESIGN_SPEC),
+    ):
+        result = await ctx.db.execute(
+            select(ProjectArtifact)
+            .where(
+                ProjectArtifact.run_id == ctx.run_id,
+                ProjectArtifact.artifact_type == artifact_type,
+            )
+            .order_by(ProjectArtifact.version.desc())
+            .limit(1)
+        )
+        artifact = result.scalar_one_or_none()
+        refs[key] = {
+            "artifact_type": str(artifact_type),
+            "artifact_id": str(artifact.id) if artifact is not None else "",
+            "run_id": str(artifact.run_id) if artifact is not None else "",
+            "version": artifact.version if artifact is not None else 0,
+        }
+
+    return refs
 
 
 def _parse_tech_plan_response(content: str) -> tuple[dict | None, str | None]:

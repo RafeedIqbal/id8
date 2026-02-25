@@ -45,8 +45,9 @@ following approved PRD and design specification.
 """
 
 _USER_PROMPT_WITH_FEEDBACK = """\
-Generate a revised Technical Implementation Plan.  A previous version was
-rejected with the feedback shown below — address every point.
+Generate a revised Technical Implementation Plan.
+Previous plan was rejected. Feedback: {feedback}
+Address every feedback point in the new version.
 
 ## Approved PRD
 {prd_content}
@@ -54,8 +55,8 @@ rejected with the feedback shown below — address every point.
 ## Design Specification
 {design_content}
 
-## Reviewer Feedback
-{feedback}
+## Previous Tech Plan
+{previous_plan_content}
 """
 
 
@@ -94,10 +95,14 @@ def build_prompts(
             design_content = _serialize_artifact(previous_artifacts["design_spec"])
 
     if feedback:
+        previous_plan_content = "(not available)"
+        if previous_artifacts and "tech_plan" in previous_artifacts:
+            previous_plan_content = _serialize_artifact(previous_artifacts["tech_plan"])
         user_prompt = _USER_PROMPT_WITH_FEEDBACK.format(
             prd_content=prd_content,
             design_content=design_content,
             feedback=feedback,
+            previous_plan_content=previous_plan_content,
         )
     else:
         user_prompt = _USER_PROMPT.format(

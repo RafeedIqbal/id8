@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from app.llm.client import LlmResponse, TokenUsage
 from app.models.approval_event import ApprovalEvent
-from app.models.enums import ApprovalStage, ModelProfile, ProjectStatus
+from app.models.enums import ApprovalStage, ArtifactType, ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
@@ -144,6 +144,15 @@ _SAMPLE_DESIGN = {
     "metadata": {"provider": "internal_spec"},
 }
 
+_SAMPLE_PREVIOUS_TECH_PLAN = {
+    "folder_structure": {"src": {"app": {"main.py": "FastAPI entrypoint"}}},
+    "database_schema": {"tasks": {"columns": {"id": "uuid"}}},
+    "api_routes": [{"method": "GET", "path": "/tasks/{id}", "description": "Get task detail"}],
+    "component_hierarchy": {"App": {"Dashboard": "Main screen"}},
+    "dependencies": [{"name": "fastapi", "version": "^0.110.0"}],
+    "deployment_config": {"backend": {"runtime": "python"}},
+}
+
 
 def _make_ctx(
     db: AsyncSession,
@@ -152,14 +161,20 @@ def _make_ctx(
     previous_artifacts: dict | None = None,
     workflow_payload: dict | None = None,
 ) -> RunContext:
+    artifacts = (
+        previous_artifacts
+        if previous_artifacts is not None
+        else {"prd": _SAMPLE_PRD, "design_spec": _SAMPLE_DESIGN}
+    )
+    payload = workflow_payload if workflow_payload is not None else {}
     return RunContext(
         run_id=run.id,
         project_id=run.project_id,
         current_node=node,
         attempt=0,
         db_session=db,
-        previous_artifacts=previous_artifacts or {"prd": _SAMPLE_PRD, "design_spec": _SAMPLE_DESIGN},
-        workflow_payload=workflow_payload or {},
+        previous_artifacts=artifacts,
+        workflow_payload=payload,
     )
 
 
@@ -237,6 +252,48 @@ class TestGenerateTechPlanHandler:
         assert len(plan.api_routes) >= 1
         assert len(plan.dependencies) >= 1
         assert plan.folder_structure
+
+    @pytest.mark.asyncio
+    async def test_artifact_contains_source_references(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        prd_artifact = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.PRD,
+            version=2,
+            content=_SAMPLE_PRD,
+            model_profile=ModelProfile.PRIMARY,
+        )
+        design_artifact = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.DESIGN_SPEC,
+            version=3,
+            content=_SAMPLE_DESIGN,
+            model_profile=ModelProfile.CUSTOMTOOLS,
+        )
+        db.add(prd_artifact)
+        db.add(design_artifact)
+        await db.flush()
+
+        handler = GenerateTechPlanHandler()
+        ctx = _make_ctx(db, seed_run)
+
+        with patch(
+            "app.orchestrator.handlers.generate_tech_plan.generate_with_fallback",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response(),
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "success"
+        assert result.artifact_data is not None
+        metadata = result.artifact_data["__tech_plan_metadata"]["source_artifacts"]
+        assert metadata["prd"]["artifact_id"] == str(prd_artifact.id)
+        assert metadata["prd"]["version"] == 2
+        assert metadata["design_spec"]["artifact_id"] == str(design_artifact.id)
+        assert metadata["design_spec"]["version"] == 3
 
     @pytest.mark.asyncio
     async def test_llm_called_with_correct_profile(
@@ -338,28 +395,35 @@ class TestGenerateTechPlanHandler:
     ) -> None:
         handler = GenerateTechPlanHandler()
         ctx = _make_ctx(db, seed_run, previous_artifacts={})
-
-        result = await handler.execute(ctx)
-
-        assert result.outcome == "failure"
-        assert "prd" in result.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_works_without_design_artifact(
-        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
-    ) -> None:
-        """Tech plan should still generate if design_spec is missing."""
-        handler = GenerateTechPlanHandler()
-        ctx = _make_ctx(db, seed_run, previous_artifacts={"prd": _SAMPLE_PRD})
+        mock_gen = AsyncMock(return_value=_mock_llm_response())
 
         with patch(
             "app.orchestrator.handlers.generate_tech_plan.generate_with_fallback",
-            new_callable=AsyncMock,
-            return_value=_mock_llm_response(),
+            mock_gen,
         ):
             result = await handler.execute(ctx)
 
-        assert result.outcome == "success"
+        assert result.outcome == "failure"
+        assert "prd" in result.error.lower()
+        mock_gen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_design_artifact_fails(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        handler = GenerateTechPlanHandler()
+        ctx = _make_ctx(db, seed_run, previous_artifacts={"prd": _SAMPLE_PRD})
+        mock_gen = AsyncMock(return_value=_mock_llm_response())
+
+        with patch(
+            "app.orchestrator.handlers.generate_tech_plan.generate_with_fallback",
+            mock_gen,
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "failure"
+        assert "design" in result.error.lower()
+        mock_gen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +448,15 @@ class TestRejectionFeedback:
         await db.flush()
 
         handler = GenerateTechPlanHandler()
-        ctx = _make_ctx(db, seed_run)
+        ctx = _make_ctx(
+            db,
+            seed_run,
+            previous_artifacts={
+                "prd": _SAMPLE_PRD,
+                "design_spec": _SAMPLE_DESIGN,
+                "tech_plan": _SAMPLE_PREVIOUS_TECH_PLAN,
+            },
+        )
 
         mock_gen = AsyncMock(return_value=_mock_llm_response())
         with patch(
@@ -398,6 +470,8 @@ class TestRejectionFeedback:
         call_kwargs = mock_gen.call_args.kwargs
         assert "database indexes" in call_kwargs["prompt"].lower()
         assert "rejected" in call_kwargs["prompt"].lower()
+        assert "previous tech plan" in call_kwargs["prompt"].lower()
+        assert "/tasks/{id}" in call_kwargs["prompt"]
 
     @pytest.mark.asyncio
     async def test_no_feedback_when_no_rejection(
@@ -439,11 +513,17 @@ class TestTechPlanPromptTemplates:
         from app.llm.prompts.tech_plan_generation import build_prompts
 
         system, user = build_prompts(
-            previous_artifacts={"prd": _SAMPLE_PRD, "design_spec": _SAMPLE_DESIGN},
+            previous_artifacts={
+                "prd": _SAMPLE_PRD,
+                "design_spec": _SAMPLE_DESIGN,
+                "tech_plan": _SAMPLE_PREVIOUS_TECH_PLAN,
+            },
             feedback="Add caching strategy",
         )
         assert "Add caching strategy" in user
         assert "rejected" in user.lower()
+        assert "previous tech plan" in user.lower()
+        assert "/tasks/{id}" in user
 
     def test_prompt_without_design(self) -> None:
         from app.llm.prompts.tech_plan_generation import build_prompts

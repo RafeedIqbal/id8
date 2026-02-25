@@ -15,17 +15,17 @@ Implement the `GenerateTechPlan` orchestrator node that produces a technical pla
 ## Steps
 
 ### 1. GenerateTechPlan handler
-- [ ] `backend/app/orchestrator/handlers/generate_tech_plan.py`
-- [ ] Load latest approved PRD artifact and latest approved design artifact
-- [ ] Build prompt using `primary` model profile:
+- [x] `backend/app/orchestrator/handlers/generate_tech_plan.py`
+- [x] Load latest approved PRD artifact and latest approved design artifact
+- [x] Build prompt using `primary` model profile:
   - System prompt: "You are a senior software architect. Generate a technical implementation plan..."
   - Include: PRD content, design spec content
   - Output format: JSON with required sections
-- [ ] Call LLM router
-- [ ] Parse and validate response
+- [x] Call LLM router
+- [x] Parse and validate response
 
 ### 2. Tech plan output schema
-- [ ] `backend/app/schemas/tech_plan.py`:
+- [x] `backend/app/schemas/tech_plan.py`:
   ```python
   class TechPlanContent(BaseModel):
       folder_structure: dict          # directory tree
@@ -37,17 +37,17 @@ Implement the `GenerateTechPlan` orchestrator node that produces a technical pla
   ```
 
 ### 3. Rejection feedback loop
-- [ ] On rejection from `WaitTechPlanApproval`:
-  - Load previous tech plan artifact + rejection notes
-  - Include in re-generation prompt: "Previous plan was rejected. Feedback: {notes}"
-  - Produce new artifact version
+- [x] On rejection from `WaitTechPlanApproval`:
+  - [x] Load previous tech plan artifact + rejection notes
+  - [x] Include in re-generation prompt: "Previous plan was rejected. Feedback: {notes}"
+  - [x] Produce new artifact version
 
 ### 4. Update project status
-- [ ] On success: status → `tech_plan_draft`
-- [ ] After approval: status → `tech_plan_approved`
+- [x] On success: status → `tech_plan_draft`
+- [x] After approval: status → `tech_plan_approved`
 
 ## Definition of Done
-- [ ] Tech plan artifact contains all required sections (folder structure, DB schema, API routes, component hierarchy)
-- [ ] Artifact references both the PRD and design artifacts it was built from
-- [ ] Rejection loop produces revised plan addressing feedback
-- [ ] Token usage and model profile recorded
+- [x] Tech plan artifact contains all required sections (folder structure, DB schema, API routes, component hierarchy)
+- [x] Artifact references both the PRD and design artifacts it was built from
+- [x] Rejection loop produces revised plan addressing feedback
+- [x] Token usage and model profile recorded

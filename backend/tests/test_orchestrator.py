@@ -83,6 +83,19 @@ _VALID_DESIGN_JSON = json.dumps(
     }
 )
 
+_VALID_TECH_PLAN_JSON = json.dumps(
+    {
+        "folder_structure": {"backend": {"app": {"main.py": "FastAPI entrypoint"}}},
+        "database_schema": {"tasks": {"columns": {"id": "uuid"}}},
+        "api_routes": [
+            {"method": "GET", "path": "/tasks", "description": "List tasks"},
+        ],
+        "component_hierarchy": {"App": {"Dashboard": "Main dashboard"}},
+        "dependencies": [{"name": "fastapi", "version": "^0.110.0"}],
+        "deployment_config": {"backend": {"runtime": "python"}},
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -130,6 +143,22 @@ def mock_generate_design_llm() -> None:
         )
     )
     with patch("app.design.internal_spec._generate_with_fallback", mock):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def mock_generate_tech_plan_llm() -> None:
+    """Avoid external LLM dependency in tech-plan generation."""
+    mock = AsyncMock(
+        return_value=LlmResponse(
+            content=_VALID_TECH_PLAN_JSON,
+            token_usage=TokenUsage(prompt_tokens=20, completion_tokens=40),
+            model_id="mock-gemini-tech-plan",
+            latency_ms=1.0,
+            profile_used=ModelProfile.PRIMARY,
+        )
+    )
+    with patch("app.orchestrator.handlers.generate_tech_plan.generate_with_fallback", mock):
         yield
 
 
