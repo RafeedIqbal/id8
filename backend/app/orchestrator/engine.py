@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import ProjectStatus
+from app.models.enums import ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
@@ -28,6 +29,9 @@ from app.orchestrator.handlers.stubs import artifact_type_for_node
 from app.orchestrator.nodes import NODE_REGISTRY, NODE_TO_PROJECT_STATUS, NodeName
 from app.orchestrator.retry import RateLimitError, RetryableError, schedule_retry
 from app.orchestrator.transitions import resolve_next_node
+
+if TYPE_CHECKING:
+    from app.llm.client import LlmResponse
 
 logger = logging.getLogger("id8.orchestrator.engine")
 
@@ -124,7 +128,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 
         # ---- Persist artifact if handler produced one ---------------------
         if node_result.artifact_data is not None:
-            await _persist_artifact(run, node_name, node_result.artifact_data, db)
+            await _persist_artifact(run, node_name, node_result.artifact_data, db, llm_response=None)
 
         # ---- Resolve transition -------------------------------------------
         try:
@@ -264,8 +268,14 @@ async def _persist_artifact(
     node_name: str,
     artifact_data: dict[str, Any],
     db: AsyncSession,
+    *,
+    llm_response: LlmResponse | None = None,
 ) -> None:
-    """Create a new ``ProjectArtifact`` for the completed node."""
+    """Create a new ``ProjectArtifact`` for the completed node.
+
+    When *llm_response* is provided the artifact records the model
+    profile and token-usage telemetry.
+    """
     a_type = artifact_type_for_node(node_name)
     if a_type is None:
         return
@@ -279,12 +289,26 @@ async def _persist_artifact(
     )
     next_version = version_result.scalar_one() + 1
 
+    # Build content with optional LLM metadata
+    content = _with_node_checkpoint(artifact_data, node_name)
+    model_profile: ModelProfile | None = None
+    if llm_response is not None:
+        model_profile = llm_response.profile_used
+        content["__llm_metadata"] = {
+            "model_id": llm_response.model_id,
+            "model_profile": str(llm_response.profile_used),
+            "prompt_tokens": llm_response.token_usage.prompt_tokens,
+            "completion_tokens": llm_response.token_usage.completion_tokens,
+            "latency_ms": llm_response.latency_ms,
+        }
+
     artifact = ProjectArtifact(
         project_id=run.project_id,
         run_id=run.id,
         artifact_type=a_type,
         version=next_version,
-        content=_with_node_checkpoint(artifact_data, node_name),
+        content=content,
+        model_profile=model_profile,
     )
     db.add(artifact)
     await db.flush()

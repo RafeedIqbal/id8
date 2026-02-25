@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
@@ -15,6 +16,7 @@ from app.orchestrator import NodeName, run_orchestrator
 from app.schemas.approval import ApprovalEventResponse, ApprovalRequest
 
 router = APIRouter(tags=["approvals"])
+logger = logging.getLogger(__name__)
 
 # Which project status is valid for each approval stage
 _STAGE_TO_VALID_STATUS: dict[ApprovalStage, ProjectStatus] = {
@@ -42,8 +44,12 @@ _STAGE_TO_WAIT_NODE: dict[ApprovalStage, NodeName] = {
 async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
     """Fire-and-forget wrapper that opens its own DB session."""
     async with async_session() as db:
-        await run_orchestrator(run_id, db)
-        await db.commit()
+        try:
+            await run_orchestrator(run_id, db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Background orchestrator run failed for run_id=%s", run_id)
 
 
 @router.post(

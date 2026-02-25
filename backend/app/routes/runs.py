@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -20,6 +21,7 @@ from app.orchestrator.handlers.stubs import artifact_type_for_node
 from app.schemas.run import CreateRunRequest, ProjectRunResponse
 
 router = APIRouter(tags=["runs"])
+logger = logging.getLogger(__name__)
 
 _NODE_PROGRESS_ORDER: tuple[NodeName, ...] = (
     NodeName.INGEST_PROMPT,
@@ -49,8 +51,12 @@ _WAIT_NODE_TO_STAGE: dict[NodeName, ApprovalStage] = {
 async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
     """Fire-and-forget wrapper that opens its own DB session."""
     async with async_session() as db:
-        await run_orchestrator(run_id, db)
-        await db.commit()
+        try:
+            await run_orchestrator(run_id, db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Background orchestrator run failed for run_id=%s", run_id)
 
 
 async def _latest_run_for_project(project_id: uuid.UUID, db: AsyncSession) -> ProjectRun | None:
