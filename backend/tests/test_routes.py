@@ -187,6 +187,62 @@ class TestCreateRun:
         assert conflict_resp.status_code == 409
         assert "different project" in conflict_resp.json()["error"]["message"].lower()
 
+    @pytest.mark.asyncio
+    async def test_resume_requires_failed_run(
+        self, client: AsyncClient, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "IngestPrompt"},
+        )
+        assert resp.status_code == 409
+        assert "failed run" in resp.json()["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_resume_requires_previously_reached_node(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_run.status = ProjectStatus.FAILED
+        seed_run.current_node = "EndFailed"
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "DeployProduction"},
+        )
+        assert resp.status_code == 409
+        assert "not reached" in resp.json()["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_resume_reuses_failed_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_run.status = ProjectStatus.FAILED
+        seed_run.current_node = "EndFailed"
+        seed_run.last_error_code = "TEST"
+        seed_run.last_error_message = "boom"
+
+        artifact = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.PRD,
+            version=1,
+            content={"__node_name": "GeneratePRD", "summary": "existing"},
+            model_profile=ModelProfile.PRIMARY,
+        )
+        db.add(artifact)
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "GeneratePRD"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["id"] == str(seed_run.id)
+        assert data["current_node"] == "GeneratePRD"
+        assert data["last_error_code"] is None
+
 
 # ---------------------------------------------------------------------------
 # POST /v1/projects/{projectId}/design/generate — generateDesign
@@ -258,6 +314,7 @@ class TestSubmitApproval:
         self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
     ) -> None:
         seed_project.status = ProjectStatus.PRD_DRAFT
+        seed_run.current_node = "WaitPRDApproval"
         await db.flush()
 
         body = {"stage": "prd", "decision": "approved"}
@@ -282,6 +339,7 @@ class TestSubmitApproval:
         self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
     ) -> None:
         seed_project.status = ProjectStatus.PRD_DRAFT
+        seed_run.current_node = "WaitPRDApproval"
         await db.flush()
 
         body = {"stage": "prd", "decision": "rejected", "notes": "Needs more detail"}
@@ -292,6 +350,19 @@ class TestSubmitApproval:
         # Verify project status unchanged
         get_resp = await client.get(f"/v1/projects/{seed_project.id}")
         assert get_resp.json()["status"] == "prd_draft"
+
+    @pytest.mark.asyncio
+    async def test_stage_must_match_wait_node(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_project.status = ProjectStatus.PRD_DRAFT
+        seed_run.current_node = "WaitDesignApproval"
+        await db.flush()
+
+        body = {"stage": "prd", "decision": "approved"}
+        resp = await client.post(f"/v1/projects/{seed_project.id}/approvals", json=body)
+        assert resp.status_code == 409
+        assert "only valid at" in resp.json()["error"]["message"].lower()
 
 
 # ---------------------------------------------------------------------------

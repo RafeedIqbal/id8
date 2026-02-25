@@ -31,23 +31,82 @@ class NodeName(enum.StrEnum):
 @dataclass(frozen=True, slots=True)
 class NodeMeta:
     name: NodeName
+    next_on_success: NodeName | None = None
+    next_on_failure: NodeName | None = None
     is_wait_node: bool = False
     is_terminal: bool = False
+    # Only idempotent nodes should be skipped when an artifact checkpoint exists.
+    is_idempotent: bool = False
 
 
 NODE_REGISTRY: dict[NodeName, NodeMeta] = {
-    NodeName.INGEST_PROMPT: NodeMeta(NodeName.INGEST_PROMPT),
-    NodeName.GENERATE_PRD: NodeMeta(NodeName.GENERATE_PRD),
-    NodeName.WAIT_PRD_APPROVAL: NodeMeta(NodeName.WAIT_PRD_APPROVAL, is_wait_node=True),
-    NodeName.GENERATE_DESIGN: NodeMeta(NodeName.GENERATE_DESIGN),
-    NodeName.WAIT_DESIGN_APPROVAL: NodeMeta(NodeName.WAIT_DESIGN_APPROVAL, is_wait_node=True),
-    NodeName.GENERATE_TECH_PLAN: NodeMeta(NodeName.GENERATE_TECH_PLAN),
-    NodeName.WAIT_TECH_PLAN_APPROVAL: NodeMeta(NodeName.WAIT_TECH_PLAN_APPROVAL, is_wait_node=True),
-    NodeName.WRITE_CODE: NodeMeta(NodeName.WRITE_CODE),
-    NodeName.SECURITY_GATE: NodeMeta(NodeName.SECURITY_GATE),
-    NodeName.PREPARE_PR: NodeMeta(NodeName.PREPARE_PR),
-    NodeName.WAIT_DEPLOY_APPROVAL: NodeMeta(NodeName.WAIT_DEPLOY_APPROVAL, is_wait_node=True),
-    NodeName.DEPLOY_PRODUCTION: NodeMeta(NodeName.DEPLOY_PRODUCTION),
+    NodeName.INGEST_PROMPT: NodeMeta(
+        NodeName.INGEST_PROMPT,
+        next_on_success=NodeName.GENERATE_PRD,
+        next_on_failure=NodeName.END_FAILED,
+        is_idempotent=True,
+    ),
+    NodeName.GENERATE_PRD: NodeMeta(
+        NodeName.GENERATE_PRD,
+        next_on_success=NodeName.WAIT_PRD_APPROVAL,
+        next_on_failure=NodeName.END_FAILED,
+    ),
+    NodeName.WAIT_PRD_APPROVAL: NodeMeta(
+        NodeName.WAIT_PRD_APPROVAL,
+        next_on_success=NodeName.GENERATE_DESIGN,
+        next_on_failure=NodeName.GENERATE_PRD,
+        is_wait_node=True,
+    ),
+    NodeName.GENERATE_DESIGN: NodeMeta(
+        NodeName.GENERATE_DESIGN,
+        next_on_success=NodeName.WAIT_DESIGN_APPROVAL,
+        next_on_failure=NodeName.END_FAILED,
+    ),
+    NodeName.WAIT_DESIGN_APPROVAL: NodeMeta(
+        NodeName.WAIT_DESIGN_APPROVAL,
+        next_on_success=NodeName.GENERATE_TECH_PLAN,
+        next_on_failure=NodeName.GENERATE_DESIGN,
+        is_wait_node=True,
+    ),
+    NodeName.GENERATE_TECH_PLAN: NodeMeta(
+        NodeName.GENERATE_TECH_PLAN,
+        next_on_success=NodeName.WAIT_TECH_PLAN_APPROVAL,
+        next_on_failure=NodeName.END_FAILED,
+    ),
+    NodeName.WAIT_TECH_PLAN_APPROVAL: NodeMeta(
+        NodeName.WAIT_TECH_PLAN_APPROVAL,
+        next_on_success=NodeName.WRITE_CODE,
+        next_on_failure=NodeName.GENERATE_TECH_PLAN,
+        is_wait_node=True,
+    ),
+    NodeName.WRITE_CODE: NodeMeta(
+        NodeName.WRITE_CODE,
+        next_on_success=NodeName.SECURITY_GATE,
+        next_on_failure=NodeName.END_FAILED,
+    ),
+    NodeName.SECURITY_GATE: NodeMeta(
+        NodeName.SECURITY_GATE,
+        next_on_success=NodeName.PREPARE_PR,
+        next_on_failure=NodeName.WRITE_CODE,
+    ),
+    NodeName.PREPARE_PR: NodeMeta(
+        NodeName.PREPARE_PR,
+        next_on_success=NodeName.WAIT_DEPLOY_APPROVAL,
+        next_on_failure=NodeName.END_FAILED,
+        is_idempotent=True,
+    ),
+    NodeName.WAIT_DEPLOY_APPROVAL: NodeMeta(
+        NodeName.WAIT_DEPLOY_APPROVAL,
+        next_on_success=NodeName.DEPLOY_PRODUCTION,
+        next_on_failure=NodeName.END_FAILED,
+        is_wait_node=True,
+    ),
+    NodeName.DEPLOY_PRODUCTION: NodeMeta(
+        NodeName.DEPLOY_PRODUCTION,
+        next_on_success=NodeName.END_SUCCESS,
+        next_on_failure=NodeName.END_FAILED,
+        is_idempotent=True,
+    ),
     NodeName.END_SUCCESS: NodeMeta(NodeName.END_SUCCESS, is_terminal=True),
     NodeName.END_FAILED: NodeMeta(NodeName.END_FAILED, is_terminal=True),
 }

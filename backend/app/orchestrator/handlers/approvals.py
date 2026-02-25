@@ -7,7 +7,6 @@ the current run + stage and returns the appropriate outcome.
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage

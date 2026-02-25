@@ -9,7 +9,7 @@ from __future__ import annotations
 from app.orchestrator.nodes import NodeName
 
 # Outcome keys: success, approved, rejected, passed, failed
-TRANSITIONS: dict[str, dict[str, str]] = {
+TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
     NodeName.INGEST_PROMPT: {"success": NodeName.GENERATE_PRD},
     NodeName.GENERATE_PRD: {"success": NodeName.WAIT_PRD_APPROVAL},
     NodeName.WAIT_PRD_APPROVAL: {"approved": NodeName.GENERATE_DESIGN, "rejected": NodeName.GENERATE_PRD},
@@ -25,19 +25,23 @@ TRANSITIONS: dict[str, dict[str, str]] = {
 }
 
 
-class InvalidTransition(Exception):
+class InvalidTransitionError(Exception):
     """Raised when no transition exists for the given node + outcome."""
 
 
 def resolve_next_node(current_node: str, outcome: str) -> str:
     """Return the next node name for *current_node* given *outcome*.
 
-    Raises ``InvalidTransition`` if the combination is not in the table.
+    Raises ``InvalidTransitionError`` if the combination is not in the table.
     """
     outcomes = TRANSITIONS.get(current_node)
     if outcomes is None:
-        raise InvalidTransition(f"No transitions defined for node '{current_node}'")
+        raise InvalidTransitionError(f"No transitions defined for node '{current_node}'")
     next_node = outcomes.get(outcome)
     if next_node is None:
-        raise InvalidTransition(f"No transition for node '{current_node}' with outcome '{outcome}'")
+        raise InvalidTransitionError(f"No transition for node '{current_node}' with outcome '{outcome}'")
     return next_node
+
+
+# Backwards compatibility for older imports.
+InvalidTransition = InvalidTransitionError

@@ -16,7 +16,7 @@ from app.models.retry_job import RetryJob
 
 logger = logging.getLogger("id8.orchestrator.retry")
 
-MAX_ATTEMPTS: int = 3
+MAX_RETRIES: int = 3
 BASE_DELAY_SECONDS: float = 3.0  # 3^1 = 3s, 3^2 = 9s, 3^3 = 27s
 
 
@@ -45,32 +45,36 @@ async def schedule_retry(
     *,
     run_id: uuid.UUID,
     node_name: str,
-    attempt: int,
+    retry_attempt: int,
     error_message: str,
+    use_fallback_profile: bool,
     db: AsyncSession,
 ) -> RetryJob | None:
     """Create a ``RetryJob`` if the node has retries remaining.
 
     Returns the created ``RetryJob``, or ``None`` if retries are exhausted.
     """
-    if attempt >= MAX_ATTEMPTS:
+    if retry_attempt > MAX_RETRIES:
         logger.warning(
-            "Retry exhausted for run=%s node=%s after %d attempts",
+            "Retry exhausted for run=%s node=%s after %d retries",
             run_id,
             node_name,
-            attempt,
+            retry_attempt - 1,
         )
         return None
 
-    delay = compute_backoff(attempt + 1)
+    delay = compute_backoff(retry_attempt)
     scheduled_for = datetime.now(tz=UTC) + timedelta(seconds=delay)
+    payload: dict[str, str] = {"error": error_message}
+    if use_fallback_profile:
+        payload["model_profile"] = "fallback"
 
     job = RetryJob(
         run_id=run_id,
         node_name=node_name,
-        retry_attempt=attempt + 1,
+        retry_attempt=retry_attempt,
         scheduled_for=scheduled_for,
-        payload={"error": error_message},
+        payload=payload,
     )
     db.add(job)
     await db.flush()
@@ -79,7 +83,7 @@ async def schedule_retry(
         "Scheduled retry for run=%s node=%s attempt=%d at %s",
         run_id,
         node_name,
-        attempt + 1,
+        retry_attempt,
         scheduled_for.isoformat(),
     )
     return job

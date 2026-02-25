@@ -11,7 +11,7 @@ from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
 from app.models.project_run import ProjectRun
-from app.orchestrator import run_orchestrator
+from app.orchestrator import NodeName, run_orchestrator
 from app.schemas.approval import ApprovalEventResponse, ApprovalRequest
 
 router = APIRouter(tags=["approvals"])
@@ -30,6 +30,12 @@ _STAGE_TO_APPROVED_STATUS: dict[ApprovalStage, ProjectStatus] = {
     ApprovalStage.DESIGN: ProjectStatus.DESIGN_APPROVED,
     ApprovalStage.TECH_PLAN: ProjectStatus.TECH_PLAN_APPROVED,
     ApprovalStage.DEPLOY: ProjectStatus.DEPLOYING,
+}
+_STAGE_TO_WAIT_NODE: dict[ApprovalStage, NodeName] = {
+    ApprovalStage.PRD: NodeName.WAIT_PRD_APPROVAL,
+    ApprovalStage.DESIGN: NodeName.WAIT_DESIGN_APPROVAL,
+    ApprovalStage.TECH_PLAN: NodeName.WAIT_TECH_PLAN_APPROVAL,
+    ApprovalStage.DEPLOY: NodeName.WAIT_DEPLOY_APPROVAL,
 }
 
 
@@ -72,6 +78,15 @@ async def submit_approval(
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=409, detail="No active run for this project")
+    expected_wait_node = _STAGE_TO_WAIT_NODE[body.stage]
+    if run.current_node != expected_wait_node:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Run is at node {run.current_node}; {body.stage} approvals are only valid at "
+                f"{expected_wait_node}"
+            ),
+        )
 
     # Create approval event
     # TODO: resolve actor from auth context

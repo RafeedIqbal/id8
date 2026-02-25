@@ -26,7 +26,7 @@ from app.orchestrator.base import NodeResult, RunContext
 from app.orchestrator.handlers.registry import HANDLER_REGISTRY
 from app.orchestrator.handlers.stubs import artifact_type_for_node
 from app.orchestrator.nodes import NODE_REGISTRY, NODE_TO_PROJECT_STATUS, NodeName
-from app.orchestrator.retry import RetryableError, schedule_retry
+from app.orchestrator.retry import RateLimitError, RetryableError, schedule_retry
 from app.orchestrator.transitions import resolve_next_node
 
 logger = logging.getLogger("id8.orchestrator.engine")
@@ -49,7 +49,13 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 
     while True:
         node_name = run.current_node
-        meta = NODE_REGISTRY.get(NodeName(node_name))
+        try:
+            canonical_node = NodeName(node_name)
+        except ValueError:
+            logger.error("Unknown node '%s' for run=%s — marking failed", node_name, run_id)
+            await _transition_to_failed(run, f"Unknown node: {node_name}", db)
+            return
+        meta = NODE_REGISTRY.get(canonical_node)
 
         if meta is None:
             logger.error("Unknown node '%s' for run=%s — marking failed", node_name, run_id)
@@ -70,7 +76,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 
         # ---- Idempotency check: skip if artifact already exists -----------
         existing_artifact = await _check_existing_artifact(run_id, node_name, db)
-        if existing_artifact is not None and not meta.is_wait_node:
+        if meta.is_idempotent and existing_artifact is not None:
             logger.info("Artifact exists for run=%s node=%s — skipping", run_id, node_name)
             # Resolve next node using a "success"/"passed" outcome
             outcome = _default_outcome_for_skip(node_name)
@@ -89,14 +95,21 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             project_id=run.project_id,
             current_node=node_name,
             attempt=run.retry_count,
-            db=db,
+            db_session=db,
+            previous_artifacts=await _load_previous_artifacts(run_id, db),
         )
 
         try:
             node_result: NodeResult = await handler.execute(ctx)
         except RetryableError as exc:
             logger.warning("Retryable error in node=%s run=%s: %s", node_name, run_id, exc)
-            await _handle_retryable_error(run, node_name, str(exc), db)
+            await _handle_retryable_error(
+                run,
+                node_name,
+                str(exc),
+                db,
+                use_fallback_profile=isinstance(exc, RateLimitError),
+            )
             return
         except Exception as exc:
             logger.exception("Unhandled error in node=%s run=%s", node_name, run_id)
@@ -134,6 +147,10 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 async def _advance(run: ProjectRun, next_node: str, db: AsyncSession) -> None:
     """Move the run to *next_node* and sync project status."""
     run.current_node = next_node
+    try:
+        run.status = NODE_TO_PROJECT_STATUS[NodeName(next_node)]
+    except (KeyError, ValueError):
+        logger.warning("No run-status mapping for node=%s", next_node)
     run.updated_at = datetime.now(tz=UTC)
     run.last_error_code = None
     run.last_error_message = None
@@ -165,25 +182,31 @@ async def _transition_to_failed(run: ProjectRun, error_message: str, db: AsyncSe
 
 
 async def _handle_retryable_error(
-    run: ProjectRun, node_name: str, error_message: str, db: AsyncSession
+    run: ProjectRun,
+    node_name: str,
+    error_message: str,
+    db: AsyncSession,
+    *,
+    use_fallback_profile: bool,
 ) -> None:
     """Increment retry count and schedule a retry job, or fail if exhausted."""
     run.retry_count += 1
-    run.last_error_code = "RETRYABLE_ERROR"
+    run.last_error_code = "RATE_LIMIT" if use_fallback_profile else "RETRYABLE_ERROR"
     run.last_error_message = error_message
     run.updated_at = datetime.now(tz=UTC)
 
     job = await schedule_retry(
         run_id=run.id,
         node_name=node_name,
-        attempt=run.retry_count,
+        retry_attempt=run.retry_count,
         error_message=error_message,
+        use_fallback_profile=use_fallback_profile,
         db=db,
     )
 
     if job is None:
         # Retries exhausted
-        await _transition_to_failed(run, f"Retry exhausted after {run.retry_count} attempts: {error_message}", db)
+        await _transition_to_failed(run, f"Retry exhausted after {run.retry_count - 1} retries: {error_message}", db)
     else:
         await db.flush()
 
@@ -214,10 +237,13 @@ async def _check_existing_artifact(
         return None
 
     result = await db.execute(
-        select(ProjectArtifact).where(
+        select(ProjectArtifact)
+        .where(
             ProjectArtifact.run_id == run_id,
             ProjectArtifact.artifact_type == a_type,
-        ).limit(1)
+            ProjectArtifact.content["__node_name"].astext == node_name,
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -247,11 +273,33 @@ async def _persist_artifact(
         run_id=run.id,
         artifact_type=a_type,
         version=next_version,
-        content=artifact_data,
+        content=_with_node_checkpoint(artifact_data, node_name),
     )
     db.add(artifact)
     await db.flush()
     logger.info("Persisted artifact type=%s version=%d for run=%s", a_type, next_version, run.id)
+
+
+def _with_node_checkpoint(artifact_data: dict[str, Any], node_name: str) -> dict[str, Any]:
+    content = dict(artifact_data)
+    content["__node_name"] = node_name
+    return content
+
+
+async def _load_previous_artifacts(
+    run_id: uuid.UUID,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(ProjectArtifact)
+        .where(ProjectArtifact.run_id == run_id)
+        .order_by(ProjectArtifact.created_at.desc())
+    )
+    artifacts: dict[str, Any] = {}
+    for artifact in result.scalars():
+        key = str(artifact.artifact_type)
+        artifacts.setdefault(key, artifact.content)
+    return artifacts
 
 
 def _default_outcome_for_skip(node_name: str) -> str:

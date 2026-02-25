@@ -22,7 +22,13 @@ class RunContext:
     project_id: uuid.UUID
     current_node: str
     attempt: int
-    db: AsyncSession
+    db_session: AsyncSession
+    previous_artifacts: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def db(self) -> AsyncSession:
+        """Backwards-compatible alias for existing handlers."""
+        return self.db_session
 
 
 @dataclass(slots=True)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -201,6 +202,18 @@ class TestRejectionLoopsBack:
         # Should loop back through GeneratePRD → WaitPRDApproval again
         assert seed_run.current_node == "WaitPRDApproval"
 
+        artifact_result = await db.execute(
+            select(ProjectArtifact)
+            .where(
+                ProjectArtifact.run_id == seed_run.id,
+                ProjectArtifact.artifact_type == "prd",
+            )
+            .order_by(ProjectArtifact.version.asc())
+        )
+        artifacts = artifact_result.scalars().all()
+        assert len(artifacts) == 2
+        assert [a.version for a in artifacts] == [1, 2]
+
 
 # ---------------------------------------------------------------------------
 # 5. Full happy path to EndSuccess
@@ -309,6 +322,9 @@ class TestRetryLogic:
             jobs = result.scalars().all()
             assert len(jobs) == 1
             assert jobs[0].node_name == "IngestPrompt"
+            assert jobs[0].retry_attempt == 1
+            retry_delay = (jobs[0].scheduled_for - datetime.now(tz=UTC)).total_seconds()
+            assert 1.0 <= retry_delay <= 5.0
         finally:
             HANDLER_REGISTRY[NodeName.INGEST_PROMPT] = original
 
@@ -327,8 +343,8 @@ class TestRetryExhaustion:
         HANDLER_REGISTRY[NodeName.INGEST_PROMPT] = _FailingHandler()
 
         try:
-            # Simulate 3 attempts
-            for _ in range(3):
+            # Simulate 1 initial attempt + 3 retries
+            for _ in range(4):
                 await run_orchestrator(seed_run.id, db)
 
             await db.refresh(seed_run)
