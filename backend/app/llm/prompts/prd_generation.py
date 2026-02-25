@@ -5,6 +5,7 @@ Requirements Document from the user's initial prompt.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 _SYSTEM_PROMPT = """\
@@ -45,6 +46,9 @@ _USER_PROMPT = """\
 Create a PRD for the following project idea:
 
 {initial_prompt}
+
+Constraints:
+{constraints}
 """
 
 _USER_PROMPT_WITH_FEEDBACK = """\
@@ -57,12 +61,16 @@ Previous PRD:
 
 Original project idea:
 {initial_prompt}
+
+Constraints:
+{constraints}
 """
 
 
 def build_prompts(
     *,
     initial_prompt: str,
+    constraints: dict[str, Any] | None = None,
     feedback: str | None = None,
     previous_artifacts: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
@@ -72,15 +80,16 @@ def build_prompts(
     ----------
     initial_prompt:
         The raw user prompt describing the project idea.
+    constraints:
+        Optional structured constraints supplied with the project request.
     feedback:
         Optional rejection feedback from a previous PRD review cycle.
     previous_artifacts:
         Previous artifact content dict — used to include the rejected PRD
         when regenerating after rejection.
     """
+    constraints_text = _format_constraints(constraints)
     if feedback:
-        import json
-
         prev_prd = ""
         if previous_artifacts and "prd" in previous_artifacts:
             prd_data = previous_artifacts["prd"]
@@ -94,10 +103,20 @@ def build_prompts(
 
         user_prompt = _USER_PROMPT_WITH_FEEDBACK.format(
             initial_prompt=initial_prompt,
+            constraints=constraints_text,
             feedback=feedback,
             previous_prd=prev_prd or "(no previous PRD available)",
         )
     else:
-        user_prompt = _USER_PROMPT.format(initial_prompt=initial_prompt)
+        user_prompt = _USER_PROMPT.format(
+            initial_prompt=initial_prompt,
+            constraints=constraints_text,
+        )
 
     return _SYSTEM_PROMPT, user_prompt
+
+
+def _format_constraints(constraints: dict[str, Any] | None) -> str:
+    if not constraints:
+        return "(none)"
+    return json.dumps(constraints, indent=2, sort_keys=True)

@@ -7,9 +7,12 @@ stores a ``prd_generation_payload`` in the run context for the downstream
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 
+from app.models.enums import ProjectStatus
 from app.models.project import Project
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
@@ -47,10 +50,24 @@ class IngestPromptHandler(NodeHandler):
                 error=f"Prompt exceeds maximum length ({len(prompt)} > {_MAX_PROMPT_CHARS} chars)",
             )
 
+        raw_constraints: Any = getattr(project, "constraints", None)
+        constraints = raw_constraints if isinstance(raw_constraints, dict) else {}
+        project.status = ProjectStatus.PRD_DRAFT
+        project.updated_at = datetime.now(tz=UTC)
+
         logger.info(
-            "Ingested prompt for project=%s (%d chars)",
+            "Ingested prompt for project=%s (%d chars, constraints=%d)",
             ctx.project_id,
             len(prompt),
+            len(constraints),
         )
 
-        return NodeResult(outcome="success")
+        return NodeResult(
+            outcome="success",
+            context_updates={
+                "prd_generation_payload": {
+                    "initial_prompt": prompt,
+                    "constraints": constraints,
+                }
+            },
+        )

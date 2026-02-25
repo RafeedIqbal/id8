@@ -6,9 +6,11 @@ session — same pattern used in test_routes.py.
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -40,6 +42,26 @@ _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
 
 _SCAFFOLD_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
+_VALID_PRD_JSON = json.dumps(
+    {
+        "executive_summary": "A lightweight todo app.",
+        "user_stories": [
+            {"persona": "User", "action": "create tasks", "benefit": "track work"},
+            {"persona": "User", "action": "tag tasks", "benefit": "organize priorities"},
+            {"persona": "Manager", "action": "review tasks", "benefit": "monitor progress"},
+        ],
+        "scope_boundaries": {
+            "in_scope": ["Task CRUD", "Tags"],
+            "out_of_scope": ["Realtime sync"],
+        },
+        "entity_list": [
+            {"name": "Task", "description": "A unit of work"},
+            {"name": "Tag", "description": "A task label"},
+        ],
+        "non_goals": ["Native mobile app"],
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -56,6 +78,22 @@ async def db():
     await session.close()
     await txn.rollback()
     await conn.close()
+
+
+@pytest.fixture(autouse=True)
+def mock_generate_prd_llm() -> None:
+    """Avoid external LLM dependency in orchestrator tests."""
+    mock = AsyncMock(
+        return_value=LlmResponse(
+            content=_VALID_PRD_JSON,
+            token_usage=TokenUsage(prompt_tokens=10, completion_tokens=20),
+            model_id="mock-gemini",
+            latency_ms=1.0,
+            profile_used=ModelProfile.PRIMARY,
+        )
+    )
+    with patch("app.orchestrator.handlers.generate_prd.generate_with_fallback", mock):
+        yield
 
 
 @pytest_asyncio.fixture

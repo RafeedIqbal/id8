@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -18,21 +18,24 @@ from app.models.enums import ApprovalStage
 from app.models.project import Project
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
-if TYPE_CHECKING:
-    from app.llm.client import LlmResponse
-
 logger = logging.getLogger("id8.orchestrator.handlers.generate_prd")
 
 # How many times to retry when the LLM returns invalid JSON.
 _MAX_PARSE_RETRIES = 1
 
 
+async def generate_with_fallback(*args: Any, **kwargs: Any) -> Any:
+    """Late-bound wrapper to avoid llm/orchestrator circular imports in tests."""
+    from app.llm.client import generate_with_fallback as _generate_with_fallback
+
+    return await _generate_with_fallback(*args, **kwargs)
+
+
 class GeneratePRDHandler(NodeHandler):
     """Generate a structured PRD via LLM."""
 
     async def execute(self, ctx: RunContext) -> NodeResult:
-        # Lazy imports to avoid circular dependency (llm.client ↔ orchestrator)
-        from app.llm.client import generate_with_fallback
+        # Lazy imports avoid llm/orchestrator package-level import cycles.
         from app.llm.prompts.prd_generation import build_prompts
         from app.llm.router import resolve_profile
 
@@ -44,7 +47,12 @@ class GeneratePRDHandler(NodeHandler):
         if project is None:
             return NodeResult(outcome="failure", error=f"Project {ctx.project_id} not found")
 
-        initial_prompt = project.initial_prompt
+        payload = _extract_prd_payload(ctx.workflow_payload)
+        project_constraints = _normalize_constraints(getattr(project, "constraints", None))
+        initial_prompt = (payload.get("initial_prompt") or project.initial_prompt or "").strip()
+        constraints = _normalize_constraints(payload.get("constraints", project_constraints))
+        if not initial_prompt:
+            return NodeResult(outcome="failure", error="Project initial_prompt is empty")
 
         # 2. Check for rejection feedback (re-generation case)
         feedback = await _load_rejection_feedback(ctx)
@@ -53,6 +61,7 @@ class GeneratePRDHandler(NodeHandler):
         profile = resolve_profile(ctx.current_node)
         system_prompt, user_prompt = build_prompts(
             initial_prompt=initial_prompt,
+            constraints=constraints,
             feedback=feedback,
             previous_artifacts=ctx.previous_artifacts,
         )
@@ -98,18 +107,22 @@ class GeneratePRDHandler(NodeHandler):
                 parse_error,
             )
 
-        # All parse retries exhausted — return the raw content as artifact anyway
-        # so the run can be inspected, but mark it as unparsed.
-        logger.error("PRD generation failed schema validation after retries")
-        raw_content = _extract_raw_content(llm_response.content)
+        # All parse retries exhausted.
+        logger.error("PRD generation failed schema validation after retries: %s", last_error)
         return NodeResult(
-            outcome="success",
-            artifact_data={
-                "__parse_error": last_error,
-                "raw_content": raw_content,
-            },
-            llm_response=llm_response,
+            outcome="failure",
+            error=f"PRD schema validation failed after retries: {last_error}",
         )
+
+
+def _extract_prd_payload(workflow_payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Read the payload produced by ``IngestPrompt`` from run context."""
+    if not workflow_payload:
+        return {}
+    payload = workflow_payload.get("prd_generation_payload")
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
 
 async def _load_rejection_feedback(ctx: RunContext) -> str | None:
@@ -130,6 +143,12 @@ async def _load_rejection_feedback(ctx: RunContext) -> str | None:
     return None
 
 
+def _normalize_constraints(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
 def _parse_prd_response(content: str) -> tuple[dict | None, str | None]:
     """Try to parse the LLM response into a validated PRD dict.
 
@@ -141,12 +160,12 @@ def _parse_prd_response(content: str) -> tuple[dict | None, str | None]:
     # Strip markdown fences if the model wrapped the JSON
     text = content.strip()
     if text.startswith("```"):
-        # Remove opening fence (```json or ```)
-        first_newline = text.index("\n") if "\n" in text else len(text)
-        text = text[first_newline + 1 :]
-        if text.endswith("```"):
-            text = text[: -3]
-        text = text.strip()
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
 
     try:
         raw = json.loads(text)
@@ -159,12 +178,3 @@ def _parse_prd_response(content: str) -> tuple[dict | None, str | None]:
         return None, f"Schema validation failed: {exc}"
 
     return prd.model_dump(), None
-
-
-def _extract_raw_content(content: str) -> str:
-    """Return a cleaned-up version of the raw LLM content for debugging."""
-    # Limit stored raw content to prevent bloating the artifact
-    max_chars = 10_000
-    if len(content) > max_chars:
-        return content[:max_chars] + "... [truncated]"
-    return content

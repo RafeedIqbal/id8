@@ -89,6 +89,7 @@ def _make_ctx(
     run: ProjectRun,
     node: str = "IngestPrompt",
     previous_artifacts: dict | None = None,
+    workflow_payload: dict | None = None,
 ) -> RunContext:
     return RunContext(
         run_id=run.id,
@@ -97,6 +98,7 @@ def _make_ctx(
         attempt=0,
         db_session=db,
         previous_artifacts=previous_artifacts or {},
+        workflow_payload=workflow_payload or {},
     )
 
 
@@ -183,6 +185,10 @@ class TestIngestPromptHandler:
 
         assert result.outcome == "success"
         assert result.error is None
+        assert result.context_updates is not None
+        payload = result.context_updates["prd_generation_payload"]
+        assert "todo app" in payload["initial_prompt"].lower()
+        assert payload["constraints"] == {}
 
     @pytest.mark.asyncio
     async def test_empty_prompt_fails(
@@ -225,6 +231,19 @@ class TestIngestPromptHandler:
 
         assert result.outcome == "failure"
         assert "maximum length" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_constraints_included_in_payload(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        setattr(seed_project, "constraints", {"target_platform": "web", "style": "minimal"})
+        handler = IngestPromptHandler()
+        ctx = _make_ctx(db, seed_run)
+        result = await handler.execute(ctx)
+
+        assert result.outcome == "success"
+        payload = result.context_updates["prd_generation_payload"]
+        assert payload["constraints"]["target_platform"] == "web"
 
     @pytest.mark.asyncio
     async def test_missing_project_fails(self, db: AsyncSession, seed_run: ProjectRun) -> None:
@@ -290,6 +309,36 @@ class TestGeneratePRDHandler:
         assert call_kwargs["profile"] == ModelProfile.PRIMARY
         assert call_kwargs["node_name"] == "GeneratePRD"
         assert "todo app" in call_kwargs["prompt"].lower()
+        assert "constraints" in call_kwargs["prompt"].lower()
+
+    @pytest.mark.asyncio
+    async def test_uses_workflow_payload_prompt_and_constraints(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        handler = GeneratePRDHandler()
+        ctx = _make_ctx(
+            db,
+            seed_run,
+            node="GeneratePRD",
+            workflow_payload={
+                "prd_generation_payload": {
+                    "initial_prompt": "Build a payroll tool",
+                    "constraints": {"stack": "fastapi", "auth": "sso"},
+                }
+            },
+        )
+
+        mock_gen = AsyncMock(return_value=_mock_llm_response())
+        with patch(
+            "app.orchestrator.handlers.generate_prd.generate_with_fallback",
+            mock_gen,
+        ):
+            await handler.execute(ctx)
+
+        call_kwargs = mock_gen.call_args.kwargs
+        assert "payroll tool" in call_kwargs["prompt"].lower()
+        assert '"stack": "fastapi"' in call_kwargs["prompt"]
+        assert '"auth": "sso"' in call_kwargs["prompt"]
 
     @pytest.mark.asyncio
     async def test_token_usage_on_response(
@@ -329,7 +378,7 @@ class TestGeneratePRDHandler:
         assert "__parse_error" not in result.artifact_data
 
     @pytest.mark.asyncio
-    async def test_invalid_json_retries_then_returns_raw(
+    async def test_invalid_json_retries_then_fails(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
     ) -> None:
         handler = GeneratePRDHandler()
@@ -342,11 +391,10 @@ class TestGeneratePRDHandler:
         ):
             result = await handler.execute(ctx)
 
-        # Still returns success so the engine can persist and continue
-        assert result.outcome == "success"
-        assert result.artifact_data is not None
-        assert "__parse_error" in result.artifact_data
-        assert "raw_content" in result.artifact_data
+        assert result.outcome == "failure"
+        assert result.artifact_data is None
+        assert result.error is not None
+        assert "schema validation failed" in result.error.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -462,16 +510,19 @@ class TestPrdPromptTemplates:
         assert "JSON" in system
         assert "executive_summary" in system
         assert "CRM" in user
+        assert "Constraints:" in user
 
     def test_prompt_with_feedback_and_previous(self) -> None:
         from app.llm.prompts.prd_generation import build_prompts
 
         system, user = build_prompts(
             initial_prompt="Build a CRM",
+            constraints={"deployment": "single-region"},
             feedback="Needs more detail",
             previous_artifacts={"prd": {"executive_summary": "Old PRD", "__node_name": "x"}},
         )
         assert "Needs more detail" in user
         assert "Old PRD" in user
+        assert '"deployment": "single-region"' in user
         # Internal keys stripped
         assert "__node_name" not in user

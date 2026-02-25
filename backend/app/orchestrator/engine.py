@@ -49,6 +49,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         return
 
     logger.info("Orchestrator started for run=%s at node=%s", run_id, run.current_node)
+    workflow_payload: dict[str, Any] = {}
 
     while True:
         node_name = run.current_node
@@ -93,13 +94,15 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             continue
 
         # ---- Execute handler ----------------------------------------------
+        previous_artifacts = await _load_previous_artifacts(run_id, db)
         ctx = RunContext(
             run_id=run_id,
             project_id=run.project_id,
             current_node=node_name,
             attempt=run.retry_count,
             db_session=db,
-            previous_artifacts=await _load_previous_artifacts(run_id, db),
+            previous_artifacts=previous_artifacts,
+            workflow_payload=dict(workflow_payload),
         )
 
         try:
@@ -125,6 +128,9 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             logger.info("Run %s parked at wait node %s", run_id, node_name)
             await _update_project_status(run.project_id, node_name, db)
             return
+
+        if node_result.context_updates:
+            workflow_payload.update(node_result.context_updates)
 
         # ---- Persist artifact if handler produced one ---------------------
         if node_result.artifact_data is not None:

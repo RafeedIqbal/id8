@@ -27,6 +27,7 @@ class RunContext:
     attempt: int
     db_session: AsyncSession
     previous_artifacts: dict[str, Any] = field(default_factory=dict)
+    workflow_payload: dict[str, Any] = field(default_factory=dict)
 
     @property
     def db(self) -> AsyncSession:
@@ -40,12 +41,14 @@ class NodeResult:
 
     * ``outcome`` drives the transition table (e.g. "success", "approved").
     * ``artifact_data`` is optional JSONB content to persist as a ProjectArtifact.
+    * ``context_updates`` carries ephemeral payload for downstream nodes in this run.
     * ``llm_response`` carries model/token telemetry for artifact persistence.
     * ``error`` is an optional message stored on the run when the node fails.
     """
 
     outcome: str
     artifact_data: dict[str, Any] | None = field(default=None)
+    context_updates: dict[str, Any] | None = field(default=None)
     llm_response: LlmResponse | None = field(default=None)
     error: str | None = field(default=None)
 
