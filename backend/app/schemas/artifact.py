@@ -4,12 +4,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import ArtifactType, ModelProfile
 
 
-class ProjectArtifactResponse(BaseModel):
+class ProjectArtifact(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
     run_id: uuid.UUID
@@ -19,12 +19,15 @@ class ProjectArtifactResponse(BaseModel):
     model_profile: ModelProfile | None = None
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ArtifactResponse(BaseModel):
-    artifact: ProjectArtifactResponse
+    artifact: ProjectArtifact
 
 
 class ArtifactListResponse(BaseModel):
-    items: list[ProjectArtifactResponse]
+    items: list[ProjectArtifact]
+
+
+ProjectArtifactResponse = ProjectArtifact

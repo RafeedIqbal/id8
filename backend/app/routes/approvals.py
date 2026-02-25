@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,10 +32,14 @@ _STAGE_TO_APPROVED_STATUS: dict[ApprovalStage, ProjectStatus] = {
 }
 
 
-@router.post("/projects/{project_id}/approvals", response_model=ApprovalEventResponse)
+@router.post(
+    "/projects/{projectId}/approvals",
+    operation_id="submitApproval",
+    response_model=ApprovalEventResponse,
+)
 async def submit_approval(
-    project_id: uuid.UUID,
     body: ApprovalRequest,
+    project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalEvent:
     # Load project

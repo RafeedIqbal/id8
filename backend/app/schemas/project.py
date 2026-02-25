@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import ProjectStatus
 
@@ -14,7 +14,7 @@ class CreateProjectRequest(BaseModel):
     constraints: dict[str, Any] | None = None
 
 
-class ProjectResponse(BaseModel):
+class Project(BaseModel):
     id: uuid.UUID
     owner_user_id: uuid.UUID
     initial_prompt: str
@@ -24,4 +24,7 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
+
+
+ProjectResponse = Project

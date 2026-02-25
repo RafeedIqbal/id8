@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +31,7 @@ async def _ensure_scaffold_owner(db: AsyncSession) -> uuid.UUID:
     return user.id
 
 
-@router.post("/projects", response_model=ProjectResponse, status_code=201)
+@router.post("/projects", operation_id="createProject", response_model=ProjectResponse, status_code=201)
 async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(get_db)) -> Project:
     # TODO: resolve owner from auth context after auth integration.
     owner_user_id = await _ensure_scaffold_owner(db)
@@ -45,8 +45,11 @@ async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(
     return project
 
 
-@router.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Project:
+@router.get("/projects/{projectId}", operation_id="getProject", response_model=ProjectResponse)
+async def get_project(
+    project_id: uuid.UUID = Path(alias="projectId"),
+    db: AsyncSession = Depends(get_db),
+) -> Project:
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:

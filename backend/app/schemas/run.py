@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import ModelProfile, ProjectStatus
 
@@ -13,7 +13,7 @@ class CreateRunRequest(BaseModel):
     model_profile: ModelProfile | None = None
 
 
-class ProjectRunResponse(BaseModel):
+class ProjectRun(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
     status: ProjectStatus
@@ -24,4 +24,7 @@ class ProjectRunResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
+
+
+ProjectRunResponse = ProjectRun
