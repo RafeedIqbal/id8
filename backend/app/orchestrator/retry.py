@@ -30,6 +30,10 @@ class RateLimitError(RetryableError):
     Signals the engine to switch to the fallback model profile before retrying.
     """
 
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
 
 def compute_backoff(attempt: int) -> float:
     """Return seconds to wait before retry *attempt* (1-indexed).
@@ -48,6 +52,7 @@ async def schedule_retry(
     retry_attempt: int,
     error_message: str,
     use_fallback_profile: bool,
+    minimum_delay_seconds: float | None = None,
     db: AsyncSession,
 ) -> RetryJob | None:
     """Create a ``RetryJob`` if the node has retries remaining.
@@ -64,10 +69,14 @@ async def schedule_retry(
         return None
 
     delay = compute_backoff(retry_attempt)
+    if minimum_delay_seconds is not None:
+        delay = max(delay, minimum_delay_seconds)
     scheduled_for = datetime.now(tz=UTC) + timedelta(seconds=delay)
-    payload: dict[str, str] = {"error": error_message}
+    payload: dict[str, str | float] = {"error": error_message}
     if use_fallback_profile:
         payload["model_profile"] = "fallback"
+    if minimum_delay_seconds is not None:
+        payload["retry_after_seconds"] = minimum_delay_seconds
 
     job = RetryJob(
         run_id=run_id,

@@ -9,9 +9,12 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from app.llm.client import LlmResponse
 
 
 @dataclass(slots=True)
@@ -37,11 +40,13 @@ class NodeResult:
 
     * ``outcome`` drives the transition table (e.g. "success", "approved").
     * ``artifact_data`` is optional JSONB content to persist as a ProjectArtifact.
+    * ``llm_response`` carries model/token telemetry for artifact persistence.
     * ``error`` is an optional message stored on the run when the node fails.
     """
 
     outcome: str
     artifact_data: dict[str, Any] | None = field(default=None)
+    llm_response: LlmResponse | None = field(default=None)
     error: str | None = field(default=None)
 
 

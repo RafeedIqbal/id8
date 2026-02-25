@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -113,6 +112,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
                 str(exc),
                 db,
                 use_fallback_profile=isinstance(exc, RateLimitError),
+                minimum_delay_seconds=getattr(exc, "retry_after_seconds", None),
             )
             return
         except Exception as exc:
@@ -128,7 +128,13 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 
         # ---- Persist artifact if handler produced one ---------------------
         if node_result.artifact_data is not None:
-            await _persist_artifact(run, node_name, node_result.artifact_data, db, llm_response=None)
+            await _persist_artifact(
+                run,
+                node_name,
+                node_result.artifact_data,
+                db,
+                llm_response=node_result.llm_response,
+            )
 
         # ---- Resolve transition -------------------------------------------
         try:
@@ -203,6 +209,7 @@ async def _handle_retryable_error(
     db: AsyncSession,
     *,
     use_fallback_profile: bool,
+    minimum_delay_seconds: float | None,
 ) -> None:
     """Increment retry count and schedule a retry job, or fail if exhausted."""
     run.retry_count += 1
@@ -216,6 +223,7 @@ async def _handle_retryable_error(
         retry_attempt=run.retry_count,
         error_message=error_message,
         use_fallback_profile=use_fallback_profile,
+        minimum_delay_seconds=minimum_delay_seconds,
         db=db,
     )
 

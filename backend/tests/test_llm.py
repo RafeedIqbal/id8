@@ -4,15 +4,12 @@ All Gemini API calls are mocked — no real network requests.
 """
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.llm.client import (
     LlmResponse,
-    TokenUsage,
     _handle_api_error,
     generate,
     generate_with_fallback,
@@ -20,7 +17,6 @@ from app.llm.client import (
 from app.llm.router import resolve_model, resolve_profile
 from app.models.enums import ModelProfile
 from app.orchestrator.retry import RateLimitError, RetryableError
-
 
 # ---------------------------------------------------------------------------
 # Router tests
@@ -65,6 +61,9 @@ def _make_mock_response(
 ) -> MagicMock:
     """Build a mock of the Gemini generate_content response."""
     usage_metadata = MagicMock()
+    usage_metadata.prompt_token_count = input_tokens
+    usage_metadata.candidates_token_count = output_tokens
+    # Backward-compat fields for older SDK versions.
     usage_metadata.input_token_count = input_tokens
     usage_metadata.output_token_count = output_tokens
 
@@ -142,6 +141,22 @@ class TestErrorHandling:
         with pytest.raises(RateLimitError, match="Rate limited"):
             _handle_api_error(exc)
 
+    def test_rate_limit_extracts_retry_after_header(self) -> None:
+        from google.genai import errors as genai_errors
+
+        response = MagicMock()
+        response.headers = {"Retry-After": "12"}
+        exc = genai_errors.APIError(
+            429,
+            {"error": "Rate limit exceeded"},
+            response=response,
+        )
+
+        with pytest.raises(RateLimitError) as err:
+            _handle_api_error(exc)
+
+        assert err.value.retry_after_seconds == 12.0
+
     def test_server_error_raises_retryable(self) -> None:
         from google.genai import errors as genai_errors
 
@@ -208,12 +223,45 @@ class TestGenerateWithFallback:
         assert call_count == 3
 
     @pytest.mark.asyncio
-    async def test_all_retries_exhausted_raises(self) -> None:
-        """When all 3 attempts fail, the last error is raised."""
+    async def test_fourth_attempt_uses_reduced_prompt(self) -> None:
+        long_prompt = "x" * 12_000
+        call_args: list[dict[str, object]] = []
+
+        async def side_effect(**kwargs):
+            call_args.append(kwargs)
+            if len(call_args) <= 3:
+                raise RetryableError("transient failure")
+            return _make_mock_response("Recovered with reduced prompt")
+
         mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=side_effect)
+
+        with patch("app.llm.client._get_client", return_value=mock_client):
+            result = await generate_with_fallback(
+                profile=ModelProfile.PRIMARY,
+                node_name="WriteCode",
+                prompt=long_prompt,
+            )
+
+        assert result.content == "Recovered with reduced prompt"
+        assert result.profile_used == ModelProfile.FALLBACK
+        assert len(call_args) == 4
+        assert call_args[0]["model"] == "gemini-3.1-pro-preview"
+        assert call_args[1]["model"] == "gemini-3.1-pro-preview"
+        assert call_args[2]["model"] == "gemini-2.5-pro"
+        assert call_args[3]["model"] == "gemini-2.5-pro"
+        assert isinstance(call_args[3]["contents"], str)
+        assert len(call_args[3]["contents"]) < len(long_prompt)
+        assert "[...prompt truncated for fallback retry...]" in call_args[3]["contents"]
+
+    @pytest.mark.asyncio
+    async def test_all_retries_exhausted_raises(self) -> None:
+        """When all 4 attempts fail, the last error is raised."""
+        mock_client = MagicMock()
+        mock_generate = AsyncMock(
             side_effect=RetryableError("always failing")
         )
+        mock_client.aio.models.generate_content = mock_generate
 
         with (
             patch("app.llm.client._get_client", return_value=mock_client),
@@ -224,6 +272,8 @@ class TestGenerateWithFallback:
                 node_name="GeneratePRD",
                 prompt="Build something",
             )
+
+        assert mock_generate.await_count == 4
 
 
 # ---------------------------------------------------------------------------

@@ -16,8 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.llm.client import LlmResponse, TokenUsage
 from app.models.approval_event import ApprovalEvent
-from app.models.enums import ApprovalStage, ProjectStatus
+from app.models.enums import ApprovalStage, ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
@@ -27,7 +28,7 @@ from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 from app.orchestrator.engine import run_orchestrator
 from app.orchestrator.handlers.registry import HANDLER_REGISTRY
 from app.orchestrator.nodes import NODE_TO_PROJECT_STATUS, NodeName
-from app.orchestrator.retry import RetryableError
+from app.orchestrator.retry import RateLimitError, RetryableError
 from app.orchestrator.transitions import TRANSITIONS, resolve_next_node
 
 TEST_DATABASE_URL = os.environ.get(
@@ -294,8 +295,33 @@ class TestIdempotency:
 
 class _FailingHandler(NodeHandler):
     """A handler that always raises a RetryableError."""
+
     async def execute(self, ctx: RunContext) -> NodeResult:
         raise RetryableError("Simulated transient error")
+
+
+class _RateLimitedHandler(NodeHandler):
+    """A handler that always raises a rate-limit error with retry-after."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        raise RateLimitError("Rate limited", retry_after_seconds=15.0)
+
+
+class _LlmTelemetryHandler(NodeHandler):
+    """A handler that emits artifact + LLM telemetry."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        return NodeResult(
+            outcome="success",
+            artifact_data={"title": "Generated PRD", "source": "llm"},
+            llm_response=LlmResponse(
+                content="# PRD",
+                token_usage=TokenUsage(prompt_tokens=123, completion_tokens=456),
+                model_id="gemini-3.1-pro-preview",
+                latency_ms=321.0,
+                profile_used=ModelProfile.PRIMARY,
+            ),
+        )
 
 
 class TestRetryLogic:
@@ -330,7 +356,35 @@ class TestRetryLogic:
 
 
 # ---------------------------------------------------------------------------
-# 8. Retry exhaustion
+# 8. Rate-limit retry delay
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitDelay:
+    @pytest.mark.asyncio
+    async def test_rate_limit_uses_retry_after_delay(
+        self, db: AsyncSession, seed_run: ProjectRun
+    ) -> None:
+        original = HANDLER_REGISTRY[NodeName.INGEST_PROMPT]
+        HANDLER_REGISTRY[NodeName.INGEST_PROMPT] = _RateLimitedHandler()
+
+        try:
+            await run_orchestrator(seed_run.id, db)
+
+            result = await db.execute(
+                select(RetryJob).where(RetryJob.run_id == seed_run.id)
+            )
+            job = result.scalar_one()
+            retry_delay = (job.scheduled_for - datetime.now(tz=UTC)).total_seconds()
+            assert 13.0 <= retry_delay <= 16.0
+            assert job.payload["model_profile"] == "fallback"
+            assert job.payload["retry_after_seconds"] == 15.0
+        finally:
+            HANDLER_REGISTRY[NodeName.INGEST_PROMPT] = original
+
+
+# ---------------------------------------------------------------------------
+# 9. Retry exhaustion
 # ---------------------------------------------------------------------------
 
 
@@ -355,7 +409,40 @@ class TestRetryExhaustion:
 
 
 # ---------------------------------------------------------------------------
-# 9. Resume from failure
+# 10. LLM telemetry persistence
+# ---------------------------------------------------------------------------
+
+
+class TestLlmTelemetryPersistence:
+    @pytest.mark.asyncio
+    async def test_artifact_persists_llm_metadata(
+        self, db: AsyncSession, seed_run: ProjectRun
+    ) -> None:
+        original = HANDLER_REGISTRY[NodeName.GENERATE_PRD]
+        HANDLER_REGISTRY[NodeName.GENERATE_PRD] = _LlmTelemetryHandler()
+
+        try:
+            await run_orchestrator(seed_run.id, db)
+
+            result = await db.execute(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.run_id == seed_run.id,
+                    ProjectArtifact.artifact_type == "prd",
+                )
+            )
+            artifact = result.scalar_one()
+
+            assert artifact.model_profile == ModelProfile.PRIMARY
+            assert artifact.content["__llm_metadata"]["model_id"] == "gemini-3.1-pro-preview"
+            assert artifact.content["__llm_metadata"]["prompt_tokens"] == 123
+            assert artifact.content["__llm_metadata"]["completion_tokens"] == 456
+            assert artifact.content["__llm_metadata"]["latency_ms"] == 321.0
+        finally:
+            HANDLER_REGISTRY[NodeName.GENERATE_PRD] = original
+
+
+# ---------------------------------------------------------------------------
+# 11. Resume from failure
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +468,7 @@ class TestResumeFromFailure:
 
 
 # ---------------------------------------------------------------------------
-# 10. Project status sync per node
+# 12. Project status sync per node
 # ---------------------------------------------------------------------------
 
 

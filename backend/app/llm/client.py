@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any, cast
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -75,7 +79,7 @@ async def generate(
     model_id: str,
     prompt: str,
     system_prompt: str = "",
-    tools: list[types.Tool] | None = None,
+    tools: Sequence[types.Tool] | None = None,
 ) -> LlmResponse:
     """Call Gemini ``generate_content`` and return an :class:`LlmResponse`.
 
@@ -88,7 +92,7 @@ async def generate(
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt or None,
-        tools=tools,
+        tools=cast(list[Any] | None, tools),
     )
 
     start = time.monotonic()
@@ -107,9 +111,22 @@ async def generate(
     # Extract token usage from response metadata
     usage = TokenUsage()
     if response.usage_metadata is not None:
+        usage_metadata = response.usage_metadata
+        prompt_tokens = (
+            getattr(usage_metadata, "prompt_token_count", None)
+            or getattr(usage_metadata, "input_token_count", None)
+            or 0
+        )
+        completion_tokens = (
+            getattr(usage_metadata, "candidates_token_count", None)
+            or getattr(usage_metadata, "output_token_count", None)
+        )
+        if completion_tokens is None:
+            total_tokens = getattr(usage_metadata, "total_token_count", None) or 0
+            completion_tokens = max(0, total_tokens - prompt_tokens)
         usage = TokenUsage(
-            prompt_tokens=response.usage_metadata.input_token_count or 0,
-            completion_tokens=response.usage_metadata.output_token_count or 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     content = response.text or ""
@@ -125,7 +142,8 @@ async def generate(
 # High-level generate with fallback
 # ---------------------------------------------------------------------------
 
-_MAX_INTERNAL_RETRIES = 2  # total attempts = 1 initial + 2 retries
+_MAX_INTERNAL_RETRIES = 3  # total attempts = 1 initial + 3 retries
+_REDUCED_PROMPT_MAX_CHARS = 4_000
 
 
 async def generate_with_fallback(
@@ -142,31 +160,49 @@ async def generate_with_fallback(
         1. First attempt: model resolved from *profile*.
         2. Second attempt: same model (transient blip).
         3. Third attempt: ``fallback`` profile model.
+        4. Fourth attempt: ``fallback`` profile model with reduced prompt.
 
     If all attempts fail the final exception is re-raised.
     """
-    model_id = resolve_model(profile)
+    primary_model = resolve_model(profile)
+    fallback_model = resolve_model(ModelProfile.FALLBACK)
     last_exc: Exception | None = None
 
-    for attempt in range(1, _MAX_INTERNAL_RETRIES + 2):  # 1, 2, 3
-        current_model = model_id
+    for attempt in range(1, _MAX_INTERNAL_RETRIES + 2):  # 1, 2, 3, 4
         current_profile = profile
+        current_model = primary_model
+        current_prompt = prompt
 
-        # On third attempt, switch to fallback
-        if attempt == 3 and profile != ModelProfile.FALLBACK:
-            current_model = resolve_model(ModelProfile.FALLBACK)
+        # On third attempt and beyond, switch to fallback
+        if attempt >= 3:
             current_profile = ModelProfile.FALLBACK
-            logger.warning(
-                "Switching to fallback model=%s for node=%s (attempt %d)",
-                current_model,
-                node_name,
-                attempt,
-            )
+            current_model = fallback_model
+            if attempt == 3 and profile != ModelProfile.FALLBACK:
+                logger.warning(
+                    "AUDIT llm_model_switch node=%s from_profile=%s to_profile=%s from_model=%s to_model=%s",
+                    node_name,
+                    profile,
+                    ModelProfile.FALLBACK,
+                    primary_model,
+                    fallback_model,
+                )
+
+        # Third retry uses fallback with a compacted prompt.
+        if attempt == 4:
+            current_prompt = _reduce_prompt(prompt)
+            if current_prompt != prompt:
+                logger.warning(
+                    "AUDIT llm_prompt_reduced node=%s model=%s original_chars=%d reduced_chars=%d",
+                    node_name,
+                    current_model,
+                    len(prompt),
+                    len(current_prompt),
+                )
 
         try:
             resp = await generate(
                 model_id=current_model,
-                prompt=prompt,
+                prompt=current_prompt,
                 system_prompt=system_prompt,
                 tools=tools,
             )
@@ -177,7 +213,7 @@ async def generate_with_fallback(
                 latency_ms=resp.latency_ms,
                 profile_used=current_profile,
             )
-        except (RetryableError, RateLimitError) as exc:
+        except RetryableError as exc:
             last_exc = exc
             logger.warning(
                 "Attempt %d failed for node=%s model=%s: %s",
@@ -200,26 +236,77 @@ async def generate_with_fallback(
 # ---------------------------------------------------------------------------
 
 
+def _reduce_prompt(prompt: str, *, max_chars: int = _REDUCED_PROMPT_MAX_CHARS) -> str:
+    """Return a compact prompt variant for final fallback attempts."""
+    if len(prompt) <= max_chars:
+        return prompt
+
+    # Keep both the beginning and end to preserve task context and constraints.
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    return (
+        f"{prompt[:head_chars]}\n\n"
+        "[...prompt truncated for fallback retry...]\n\n"
+        f"{prompt[-tail_chars:]}"
+    )
+
+
+def _parse_retry_after(raw_value: str | int | float) -> float | None:
+    """Parse a Retry-After header value into seconds."""
+    if isinstance(raw_value, (int, float)):
+        return max(0.0, float(raw_value))
+
+    raw = str(raw_value).strip()
+    if not raw:
+        return None
+
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+
+    return max(0.0, (retry_at - datetime.now(tz=UTC)).total_seconds())
+
+
+def _extract_retry_after_seconds(exc: genai_errors.APIError) -> float | None:
+    """Best-effort extraction of Retry-After seconds from a Gemini API error."""
+    headers: object | None = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+
+    if headers is None or not hasattr(headers, "get"):
+        return None
+
+    headers_map = cast(Any, headers)
+    raw = headers_map.get("retry-after") or headers_map.get("Retry-After")
+    if raw is None:
+        return None
+    return _parse_retry_after(raw)
+
+
 def _handle_api_error(exc: genai_errors.APIError) -> None:
     """Translate a Gemini ``APIError`` into the appropriate retry exception."""
     status = getattr(exc, "code", None) or 0
 
     if status == 429:
         # Extract retry-after hint if available
-        retry_after: float | None = None
-        headers = getattr(exc, "headers", None) or {}
-        if isinstance(headers, dict):
-            raw = headers.get("retry-after") or headers.get("Retry-After")
-            if raw is not None:
-                try:
-                    retry_after = float(raw)
-                except (ValueError, TypeError):
-                    pass
+        retry_after = _extract_retry_after_seconds(exc)
 
-        msg = f"Rate limited (429) from Gemini API"
+        msg = "Rate limited (429) from Gemini API"
         if retry_after is not None:
             msg += f" — retry after {retry_after}s"
-        raise RateLimitError(msg) from exc
+        raise RateLimitError(msg, retry_after_seconds=retry_after) from exc
 
     if status in _RETRYABLE_STATUS_CODES:
         raise RetryableError(f"Transient Gemini API error ({status})") from exc
