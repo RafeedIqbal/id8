@@ -138,6 +138,17 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         run.retry_count = 0
         await _advance(run, next_node, db)
 
+        # Wait nodes are explicit HITL pause points. Park immediately after
+        # entering one so a single approval/rejection event is not reprocessed
+        # multiple times in the same orchestrator invocation.
+        try:
+            next_meta = NODE_REGISTRY[NodeName(next_node)]
+        except (KeyError, ValueError):
+            next_meta = None
+        if next_meta is not None and next_meta.is_wait_node:
+            logger.info("Run %s parked after entering wait node %s", run_id, next_node)
+            return
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
