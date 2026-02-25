@@ -9,14 +9,6 @@ from app.models.enums import ArtifactType
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 
-class WriteCodeHandler(NodeHandler):
-    async def execute(self, ctx: RunContext) -> NodeResult:
-        return NodeResult(
-            outcome="success",
-            artifact_data={"files": [], "loc": 0, "source": "stub"},
-        )
-
-
 class SecurityGateHandler(NodeHandler):
     async def execute(self, ctx: RunContext) -> NodeResult:
         return NodeResult(

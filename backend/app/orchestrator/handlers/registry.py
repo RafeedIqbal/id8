@@ -13,8 +13,8 @@ from app.orchestrator.handlers.stubs import (
     EndSuccessHandler,
     PreparePRHandler,
     SecurityGateHandler,
-    WriteCodeHandler,
 )
+from app.orchestrator.handlers.write_code import WriteCodeHandler
 from app.orchestrator.nodes import NodeName
 
 # Shared instance for all wait nodes.
