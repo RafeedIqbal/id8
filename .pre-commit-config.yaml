@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: backend-ruff-format
+        name: backend ruff format
+        entry: bash -lc 'cd backend && ruff format app/'
+        language: system
+        pass_filenames: false
+      - id: backend-ruff-check
+        name: backend ruff check
+        entry: bash -lc 'cd backend && ruff check app/'
+        language: system
+        pass_filenames: false
+      - id: backend-mypy
+        name: backend mypy
+        entry: bash -lc 'cd backend && mypy app/'
+        language: system
+        pass_filenames: false
