@@ -133,7 +133,13 @@ _VALID_CODE_SNAPSHOT = {
     "files": [
         {
             "path": "backend/app/main.py",
-            "content": 'from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get("/")\ndef root():\n    return {"status": "ok"}\n',
+            "content": (
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n\n"
+                "@app.get(\"/\")\n"
+                "def root():\n"
+                "    return {\"status\": \"ok\"}\n"
+            ),
             "language": "python",
         },
         {
@@ -279,10 +285,11 @@ class TestWriteCodeHandler:
         ):
             await handler.execute(ctx)
 
-        mock_gen.assert_called_once()
-        call_kwargs = mock_gen.call_args.kwargs
-        assert call_kwargs["profile"] == ModelProfile.CUSTOMTOOLS
-        assert call_kwargs["node_name"] == "WriteCode"
+        assert mock_gen.await_count == 4  # backend, frontend, config, migrations
+        for call in mock_gen.call_args_list:
+            call_kwargs = call.kwargs
+            assert call_kwargs["profile"] == ModelProfile.CUSTOMTOOLS
+            assert call_kwargs["node_name"] == "WriteCode"
 
     @pytest.mark.asyncio
     async def test_tech_plan_and_design_in_prompt(
@@ -359,7 +366,8 @@ class TestWriteCodeHandler:
         assert result.outcome == "failure"
         assert result.artifact_data is None
         assert result.error is not None
-        assert "schema validation failed" in result.error.lower()
+        assert "backend" in result.error.lower()
+        assert "invalid json" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_missing_tech_plan_fails(
@@ -556,6 +564,66 @@ class TestSecurityFeedbackLoop:
         # Should not contain security-related sections.
         assert "security findings" not in prompt.lower()
 
+    @pytest.mark.asyncio
+    async def test_security_feedback_filters_non_blocking_findings(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        security_report = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.SECURITY_REPORT,
+            version=1,
+            content={
+                "findings": [
+                    {
+                        "severity": "low",
+                        "title": "Verbose logging",
+                        "detail": "Informational only",
+                        "status": "open",
+                    },
+                    {
+                        "severity": "high",
+                        "title": "Patched finding",
+                        "detail": "Already fixed",
+                        "status": "resolved",
+                    },
+                    {
+                        "severity": "critical",
+                        "title": "Hardcoded secret",
+                        "detail": "Secret in source",
+                        "status": "open",
+                    },
+                ],
+            },
+            model_profile=ModelProfile.PRIMARY,
+        )
+        db.add(security_report)
+        await db.flush()
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(
+            db,
+            seed_run,
+            previous_artifacts={
+                "prd": _SAMPLE_PRD,
+                "design_spec": _SAMPLE_DESIGN,
+                "tech_plan": _SAMPLE_TECH_PLAN,
+                "code_snapshot": _VALID_CODE_SNAPSHOT,
+            },
+        )
+
+        mock_gen = AsyncMock(return_value=_mock_llm_response())
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            mock_gen,
+        ):
+            await handler.execute(ctx)
+
+        prompt = mock_gen.call_args.kwargs["prompt"]
+        assert "hardcoded secret" in prompt.lower()
+        assert "verbose logging" not in prompt.lower()
+        assert "patched finding" not in prompt.lower()
+
 
 # ---------------------------------------------------------------------------
 # 4. Code validation tests
@@ -564,7 +632,7 @@ class TestSecurityFeedbackLoop:
 
 class TestCodeValidation:
     @pytest.mark.asyncio
-    async def test_python_syntax_error_produces_warning(
+    async def test_python_syntax_error_fails_validation(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
     ) -> None:
         bad_snapshot = {
@@ -593,18 +661,33 @@ class TestCodeValidation:
         ):
             result = await handler.execute(ctx)
 
-        # Should still succeed (validation is non-fatal).
-        assert result.outcome == "success"
-        warnings = result.artifact_data.get("__validation_warnings", [])
-        assert any("syntax error" in w.lower() for w in warnings)
+        assert result.outcome == "failure"
+        assert result.error is not None
+        assert "syntax error" in result.error.lower()
+        assert result.context_updates is not None
+        errors = result.context_updates.get("validation_errors", [])
+        assert any("syntax error" in err.lower() for err in errors)
 
     @pytest.mark.asyncio
-    async def test_missing_entry_point_produces_warning(
+    async def test_missing_entry_point_fails_validation(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
     ) -> None:
         snapshot = {
-            **_VALID_CODE_SNAPSHOT,
-            "entry_point": "nonexistent/main.py",
+            "files": [
+                {
+                    "path": "backend/app/server.py",
+                    "content": "def serve() -> None:\n    pass\n",
+                    "language": "python",
+                },
+                {
+                    "path": "backend/requirements.txt",
+                    "content": "fastapi\n",
+                    "language": "text",
+                },
+            ],
+            "build_command": "python -m compileall backend/app",
+            "test_command": "pytest",
+            "entry_point": "backend/app/main.py",
         }
 
         handler = WriteCodeHandler()
@@ -617,12 +700,12 @@ class TestCodeValidation:
         ):
             result = await handler.execute(ctx)
 
-        assert result.outcome == "success"
-        warnings = result.artifact_data.get("__validation_warnings", [])
-        assert any("entry point" in w.lower() for w in warnings)
+        assert result.outcome == "failure"
+        assert result.error is not None
+        assert "entry point" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_missing_dependency_manifest_produces_warning(
+    async def test_missing_dependency_manifest_fails_validation(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
     ) -> None:
         snapshot = {
@@ -648,9 +731,9 @@ class TestCodeValidation:
         ):
             result = await handler.execute(ctx)
 
-        assert result.outcome == "success"
-        warnings = result.artifact_data.get("__validation_warnings", [])
-        assert any("dependency manifest" in w.lower() for w in warnings)
+        assert result.outcome == "failure"
+        assert result.error is not None
+        assert "dependency manifest" in result.error.lower()
 
 
 # ---------------------------------------------------------------------------

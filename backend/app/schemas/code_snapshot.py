@@ -16,6 +16,12 @@ class CodeFile(BaseModel):
     language: str = Field(..., description="Language identifier: python, typescript, sql, etc.")
 
 
+class CodeChunkContent(BaseModel):
+    """Single phased generation chunk."""
+
+    files: list[CodeFile] = Field(..., description="Files generated for the current phase")
+
+
 class CodeSnapshotContent(BaseModel):
     """Structured code snapshot produced by the LLM."""
 

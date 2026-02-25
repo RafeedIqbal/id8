@@ -1,14 +1,18 @@
 """WriteCode node handler — generates a full code snapshot from approved artifacts.
 
-Calls the LLM with the ``customtools`` model profile to produce structured
-source code from the approved PRD, design spec, and tech plan.  When the
-SecurityGate fails and loops back, this handler incorporates the security
-findings into a remediation prompt.
+Code generation is performed in phased chunks to stay within token limits:
+backend, frontend, configuration, and migrations.  The handler then assembles
+the full snapshot and runs static validation checks before artifact creation.
+When SecurityGate fails and loops back, unresolved high/critical findings are
+fed into generation as a remediation instruction.
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import posixpath
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -22,6 +26,37 @@ logger = logging.getLogger("id8.orchestrator.handlers.write_code")
 
 # How many times to retry when the LLM returns invalid JSON.
 _MAX_PARSE_RETRIES = 1
+_GENERATION_PHASES = ("backend", "frontend", "config", "migrations")
+_DEPENDENCY_MANIFESTS = (
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "poetry.lock",
+    "Cargo.toml",
+    "go.mod",
+)
+_CONFIG_FILE_NAMES = (
+    ".env.example",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "Dockerfile",
+    "next.config.js",
+    "next.config.mjs",
+    "vite.config.ts",
+    "vite.config.js",
+    "tsconfig.json",
+    "alembic.ini",
+    "requirements.txt",
+    "pyproject.toml",
+    "package.json",
+)
+_TS_IMPORT_RE = re.compile(
+    r"""(?x)
+    (?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]
+    |require\(\s*['"]([^'"]+)['"]\s*\)
+"""
+)
 
 
 async def generate_with_fallback(*args: Any, **kwargs: Any) -> Any:
@@ -58,7 +93,7 @@ class WriteCodeHandler(NodeHandler):
         # 2. Check for security gate feedback (remediation loop).
         feedback = await _load_security_feedback(ctx)
 
-        # 3. Build prompts with all available context.
+        # 3. Build generation context.
         profile = resolve_profile(ctx.current_node)
         artifacts_for_prompt: dict[str, Any] = {
             "tech_plan": tech_plan,
@@ -74,86 +109,107 @@ class WriteCodeHandler(NodeHandler):
             if code_snapshot:
                 artifacts_for_prompt["code_snapshot"] = code_snapshot
 
-        system_prompt, user_prompt = build_prompts(
-            previous_artifacts=artifacts_for_prompt,
-            feedback=feedback,
-        )
-
         # 4. Capture artifact lineage.
         source_artifacts = await _load_source_artifact_references(ctx)
 
-        # 5. Call LLM with retry on parse failure.
-        last_error: str | None = None
-        for attempt in range(_MAX_PARSE_RETRIES + 1):
-            effective_system = system_prompt
-            if attempt > 0 and last_error:
-                effective_system += (
-                    "\n\nIMPORTANT: Your previous response was not valid JSON. "
-                    f"Error: {last_error}\n"
-                    "You MUST return ONLY a valid JSON object, no markdown fences or extra text."
-                )
+        # 5. Generate files in structured chunks.
+        files_by_path: dict[str, dict[str, str]] = {}
+        phase_file_counts: dict[str, int] = {}
+        last_llm_response: Any | None = None
 
-            llm_response = await generate_with_fallback(
+        for phase in _GENERATION_PHASES:
+            system_prompt, user_prompt = build_prompts(
+                previous_artifacts=artifacts_for_prompt,
+                feedback=feedback,
+                chunk=phase,
+                generated_files=list(files_by_path.values()),
+            )
+            chunk_files, llm_response, chunk_error = await _generate_chunk(
                 profile=profile,
                 node_name=ctx.current_node,
-                prompt=user_prompt,
-                system_prompt=effective_system,
+                phase=phase,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
             )
-
-            # 6. Parse and validate.
-            snapshot_data, parse_error = _parse_code_response(llm_response.content)
-            if snapshot_data is not None:
-                # 7. Run basic validation on generated files.
-                validation_errors = _validate_code_snapshot(snapshot_data)
-                if validation_errors:
-                    logger.warning(
-                        "Code snapshot validation warnings for project=%s: %s",
-                        ctx.project_id,
-                        "; ".join(validation_errors),
-                    )
-                    # Attach warnings but don't fail — the security gate
-                    # will catch critical issues.
-                    snapshot_data["__validation_warnings"] = validation_errors
-
-                snapshot_data["__code_metadata"] = {
-                    "source_artifacts": source_artifacts,
-                    "security_feedback": feedback or "",
-                    "file_count": len(snapshot_data.get("files", [])),
-                    "total_loc": sum(
-                        f.get("content", "").count("\n") + 1
-                        for f in snapshot_data.get("files", [])
-                    ),
-                }
-
-                logger.info(
-                    "Generated code snapshot for project=%s (%d files, attempt=%d, model=%s)",
+            if chunk_error:
+                logger.error(
+                    "Code generation failed in phase=%s for project=%s: %s",
+                    phase,
                     ctx.project_id,
-                    len(snapshot_data.get("files", [])),
-                    attempt + 1,
-                    llm_response.model_id,
+                    chunk_error,
                 )
                 return NodeResult(
-                    outcome="success",
-                    artifact_data=snapshot_data,
-                    llm_response=llm_response,
+                    outcome="failure",
+                    error=f"Code generation failed during '{phase}' phase: {chunk_error}",
                 )
 
-            last_error = parse_error
-            logger.warning(
-                "Code snapshot parse failed (attempt %d/%d): %s",
-                attempt + 1,
-                _MAX_PARSE_RETRIES + 1,
-                parse_error,
+            if llm_response is not None:
+                last_llm_response = llm_response
+
+            phase_file_counts[phase] = 0
+            for item in chunk_files:
+                path = str(item.get("path", "")).strip()
+                if not path:
+                    continue
+                normalized = {
+                    "path": path,
+                    "content": str(item.get("content", "")),
+                    "language": str(item.get("language", "text")),
+                }
+                existing = files_by_path.get(path)
+                if existing != normalized:
+                    files_by_path[path] = normalized
+                    phase_file_counts[phase] += 1
+
+        if not files_by_path:
+            return NodeResult(
+                outcome="failure",
+                error="Code generation returned no files across all phases",
             )
 
-        # All parse retries exhausted.
-        logger.error(
-            "Code generation failed schema validation after retries: %s",
-            last_error,
+        # 6. Assemble and validate the full snapshot.
+        snapshot_data = _assemble_code_snapshot(list(files_by_path.values()))
+        validation_errors = _validate_code_snapshot(snapshot_data)
+        if validation_errors:
+            remediation = "\n".join(f"- {err}" for err in validation_errors)
+            logger.error(
+                "Code snapshot validation failed for project=%s: %s",
+                ctx.project_id,
+                "; ".join(validation_errors),
+            )
+            return NodeResult(
+                outcome="failure",
+                error="Code snapshot validation failed. Remediation required:\n" + remediation,
+                context_updates={"validation_errors": validation_errors},
+            )
+
+        if last_llm_response is None:
+            return NodeResult(
+                outcome="failure",
+                error="Code generation completed without a model response",
+            )
+
+        snapshot_data["__code_metadata"] = {
+            "source_artifacts": source_artifacts,
+            "security_feedback": feedback or "",
+            "file_count": len(snapshot_data.get("files", [])),
+            "total_loc": sum(
+                f.get("content", "").count("\n") + 1 for f in snapshot_data.get("files", [])
+            ),
+            "generation_phases": list(_GENERATION_PHASES),
+            "phase_file_counts": phase_file_counts,
+        }
+
+        logger.info(
+            "Generated code snapshot for project=%s (%d files, model=%s)",
+            ctx.project_id,
+            len(snapshot_data.get("files", [])),
+            last_llm_response.model_id,
         )
         return NodeResult(
-            outcome="failure",
-            error=f"Code snapshot schema validation failed after retries: {last_error}",
+            outcome="success",
+            artifact_data=snapshot_data,
+            llm_response=last_llm_response,
         )
 
 
@@ -186,16 +242,25 @@ async def _load_security_feedback(ctx: RunContext) -> str | None:
     if not findings:
         return None
 
-    # Format findings into a readable string for the LLM.
+    # Include only unresolved high/critical findings.
     parts = []
     for finding in findings:
-        severity = finding.get("severity", "unknown")
+        severity = str(finding.get("severity", "unknown")).lower()
+        if severity not in {"high", "critical"}:
+            continue
+        status = str(finding.get("status", "unresolved")).lower()
+        if status in {"resolved", "fixed", "dismissed", "ignored"}:
+            continue
+
         title = finding.get("title", finding.get("description", "Untitled"))
         detail = finding.get("detail", finding.get("description", ""))
         file_path = finding.get("file", "")
         line = finding.get("line", "")
         loc = f" ({file_path}:{line})" if file_path else ""
         parts.append(f"- [{severity.upper()}]{loc} {title}: {detail}")
+
+    if not parts:
+        return None
 
     return "\n".join(parts)
 
@@ -236,13 +301,54 @@ async def _load_source_artifact_references(ctx: RunContext) -> dict[str, dict[st
     return refs
 
 
-def _parse_code_response(content: str) -> tuple[dict | None, str | None]:
-    """Try to parse the LLM response into a validated code snapshot dict.
+async def _generate_chunk(
+    *,
+    profile: Any,
+    node_name: str,
+    phase: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> tuple[list[dict[str, str]], Any | None, str | None]:
+    """Run a generation phase with parse retries and return files."""
+    last_error: str | None = None
+    last_response: Any | None = None
 
-    Returns ``(snapshot_dict, None)`` on success or ``(None, error_message)``
-    on failure.
-    """
-    from app.schemas.code_snapshot import CodeSnapshotContent
+    for attempt in range(_MAX_PARSE_RETRIES + 1):
+        effective_system = system_prompt
+        if attempt > 0 and last_error:
+            effective_system += (
+                "\n\nIMPORTANT: Your previous response was not valid JSON. "
+                f"Error: {last_error}\n"
+                "You MUST return ONLY a valid JSON object, no markdown fences or extra text."
+            )
+
+        llm_response = await generate_with_fallback(
+            profile=profile,
+            node_name=node_name,
+            prompt=user_prompt,
+            system_prompt=effective_system,
+        )
+        last_response = llm_response
+
+        chunk_data, parse_error = _parse_chunk_response(llm_response.content)
+        if chunk_data is not None:
+            return chunk_data.get("files", []), llm_response, None
+
+        last_error = parse_error
+        logger.warning(
+            "Code chunk parse failed (phase=%s attempt=%d/%d): %s",
+            phase,
+            attempt + 1,
+            _MAX_PARSE_RETRIES + 1,
+            parse_error,
+        )
+
+    return [], last_response, last_error or "Unknown parse failure"
+
+
+def _parse_chunk_response(content: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse a chunk response into ``{'files': [...]}``."""
+    from app.schemas.code_snapshot import CodeChunkContent
 
     # Strip markdown fences if the model wrapped the JSON.
     text = content.strip()
@@ -260,67 +366,372 @@ def _parse_code_response(content: str) -> tuple[dict | None, str | None]:
         return None, f"Invalid JSON: {exc}"
 
     try:
-        snapshot = CodeSnapshotContent.model_validate(raw)
+        chunk = CodeChunkContent.model_validate(raw)
     except ValidationError as exc:
         return None, f"Schema validation failed: {exc}"
 
-    return snapshot.model_dump(), None
+    return chunk.model_dump(), None
+
+
+def _assemble_code_snapshot(files: list[dict[str, str]]) -> dict[str, Any]:
+    """Create a validated CodeSnapshotContent dict from merged files."""
+    from app.schemas.code_snapshot import CodeSnapshotContent
+
+    ordered_files = sorted(files, key=lambda item: item.get("path", ""))
+    paths = [f.get("path", "") for f in ordered_files]
+    snapshot = CodeSnapshotContent(
+        files=ordered_files,
+        build_command=_infer_build_command(paths),
+        test_command=_infer_test_command(paths),
+        entry_point=_infer_entry_point(paths),
+    )
+    return snapshot.model_dump()
 
 
 def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
     """Run basic validation on a parsed code snapshot.
 
-    Returns a list of warning strings (empty if everything looks good).
-    These are non-fatal — the security gate will catch critical issues.
+    Returns a list of actionable validation errors (empty if valid).
     """
-    warnings: list[str] = []
+    errors: list[str] = []
     files = snapshot.get("files", [])
 
     if not files:
-        warnings.append("Code snapshot contains no files")
-        return warnings
+        errors.append("Code snapshot contains no files")
+        return errors
 
-    # Collect all file paths for cross-reference checking.
-    file_paths = {f["path"] for f in files}
+    file_paths = {
+        str(f.get("path", "")).strip()
+        for f in files
+        if isinstance(f, dict) and str(f.get("path", "")).strip()
+    }
+    if not file_paths:
+        errors.append("Code snapshot contains files with missing/empty paths")
+        return errors
 
-    # Check entry point exists.
+    # Required files.
     entry_point = snapshot.get("entry_point", "")
-    if entry_point and entry_point not in file_paths:
-        warnings.append(f"Entry point '{entry_point}' not found in generated files")
+    if not entry_point:
+        errors.append("Entry point is missing")
+    elif entry_point not in file_paths:
+        errors.append(f"Entry point '{entry_point}' not found in generated files")
 
-    # Check for basic Python syntax (AST parse) on .py files.
+    if not any(_is_dependency_manifest(path) for path in file_paths):
+        errors.append("No dependency manifest found (package.json, requirements.txt, etc.)")
+
+    if not any(_is_configuration_file(path) for path in file_paths):
+        errors.append("No configuration file found (e.g. Dockerfile, .env.example, tsconfig)")
+
+    python_modules = _build_python_module_index(file_paths)
+    known_top_modules = {module.split(".", 1)[0] for module in python_modules if module}
+
     for f in files:
         path = f.get("path", "")
         content = f.get("content", "")
+        if not path or not isinstance(content, str):
+            continue
+
         if path.endswith(".py") and content.strip():
-            error = _check_python_syntax(content, path)
-            if error:
-                warnings.append(error)
+            tree, syntax_error = _parse_python_ast(content, path)
+            if syntax_error:
+                errors.append(syntax_error)
+            elif tree is not None:
+                errors.extend(
+                    _check_python_imports(
+                        path=path,
+                        tree=tree,
+                        file_paths=file_paths,
+                        known_top_modules=known_top_modules,
+                    )
+                )
 
-    # Check that required file types are present.
-    has_config = any(
-        f["path"].endswith(name)
-        for f in files
-        for name in (
-            "package.json",
-            "requirements.txt",
-            "pyproject.toml",
-            "Cargo.toml",
-        )
-    )
-    if not has_config:
-        warnings.append("No dependency manifest found (package.json, requirements.txt, etc.)")
+        if path.endswith((".ts", ".tsx", ".js", ".jsx")) and content.strip():
+            syntax_error = _check_jsts_syntax(content, path)
+            if syntax_error:
+                errors.append(syntax_error)
+            errors.extend(_check_jsts_imports(path, content, file_paths))
 
-    return warnings
+    return errors
 
 
-def _check_python_syntax(source: str, path: str) -> str | None:
-    """Return an error string if *source* has a Python syntax error, else None."""
-    import ast
+def _infer_entry_point(file_paths: list[str]) -> str:
+    for candidate in (
+        "backend/app/main.py",
+        "app/main.py",
+        "backend/main.py",
+        "main.py",
+    ):
+        if candidate in file_paths:
+            return candidate
+    for path in file_paths:
+        if path.endswith("/main.py"):
+            return path
+    return "backend/app/main.py"
 
+
+def _infer_build_command(file_paths: list[str]) -> str:
+    if any(path.endswith("package.json") for path in file_paths):
+        return "npm run build"
+    if any(path.endswith(("requirements.txt", "pyproject.toml")) for path in file_paths):
+        return "python -m compileall backend/app"
+    return "echo build"
+
+
+def _infer_test_command(file_paths: list[str]) -> str:
+    if any(path.endswith("package.json") for path in file_paths):
+        return "npm test"
+    if any(path.endswith((".py", "requirements.txt", "pyproject.toml")) for path in file_paths):
+        return "pytest"
+    return "echo test"
+
+
+def _is_dependency_manifest(path: str) -> bool:
+    return any(path.endswith(name) for name in _DEPENDENCY_MANIFESTS)
+
+
+def _is_configuration_file(path: str) -> bool:
+    return any(path.endswith(name) for name in _CONFIG_FILE_NAMES)
+
+
+def _build_python_module_index(file_paths: set[str]) -> set[str]:
+    modules: set[str] = set()
+    for path in file_paths:
+        if not path.endswith(".py"):
+            continue
+        without_ext = path[:-3]
+        parts = without_ext.split("/")
+        for idx in range(len(parts)):
+            suffix = parts[idx:]
+            if suffix and suffix[-1] == "__init__":
+                suffix = suffix[:-1]
+            if suffix:
+                modules.add(".".join(suffix))
+    return modules
+
+
+def _parse_python_ast(source: str, path: str) -> tuple[ast.Module | None, str | None]:
     try:
-        ast.parse(source)
+        return ast.parse(source), None
     except SyntaxError as exc:
         line_info = f" (line {exc.lineno})" if exc.lineno else ""
-        return f"Python syntax error in {path}{line_info}: {exc.msg}"
+        return None, f"Python syntax error in {path}{line_info}: {exc.msg}"
+
+
+def _check_python_imports(
+    *,
+    path: str,
+    tree: ast.Module,
+    file_paths: set[str],
+    known_top_modules: set[str],
+) -> list[str]:
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module = alias.name
+                if _looks_like_local_python_module(module, known_top_modules) and not _python_module_exists(
+                    module, file_paths
+                ):
+                    errors.append(
+                        f"Python import in {path} does not resolve in snapshot: '{module}'"
+                    )
+
+        if isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                resolved = _resolve_relative_python_import_path(
+                    source_path=path,
+                    level=node.level,
+                    module=node.module,
+                )
+                if not resolved or not _python_path_exists(resolved, file_paths):
+                    target = "." * node.level + (node.module or "")
+                    errors.append(
+                        f"Relative Python import in {path} does not resolve in snapshot: '{target}'"
+                    )
+                continue
+
+            module = node.module or ""
+            if not module:
+                continue
+            if _looks_like_local_python_module(module, known_top_modules) and not _python_module_exists(
+                module, file_paths
+            ):
+                errors.append(
+                    f"Python import in {path} does not resolve in snapshot: '{module}'"
+                )
+
+    return errors
+
+
+def _looks_like_local_python_module(module: str, known_top_modules: set[str]) -> bool:
+    return module.split(".", 1)[0] in known_top_modules
+
+
+def _python_module_exists(module: str, file_paths: set[str]) -> bool:
+    module_path = module.replace(".", "/")
+    direct_candidates = (
+        f"{module_path}.py",
+        f"{module_path}/__init__.py",
+    )
+    for candidate in direct_candidates:
+        if candidate in file_paths:
+            return True
+        suffix = f"/{candidate}"
+        if any(path.endswith(suffix) for path in file_paths):
+            return True
+
+    package_prefix = f"{module_path}/"
+    if any(path.startswith(package_prefix) or f"/{package_prefix}" in path for path in file_paths):
+        return True
+
+    return False
+
+
+def _resolve_relative_python_import_path(
+    *,
+    source_path: str,
+    level: int,
+    module: str | None,
+) -> str | None:
+    base_parts = source_path.split("/")[:-1]
+    up_levels = max(level - 1, 0)
+    if up_levels > len(base_parts):
+        return None
+    if up_levels:
+        base_parts = base_parts[:-up_levels]
+    if module:
+        base_parts.extend(module.split("."))
+    if not base_parts:
+        return None
+    return "/".join(base_parts)
+
+
+def _python_path_exists(module_path: str, file_paths: set[str]) -> bool:
+    for candidate in (f"{module_path}.py", f"{module_path}/__init__.py"):
+        if candidate in file_paths:
+            return True
+    return False
+
+
+def _check_jsts_syntax(source: str, path: str) -> str | None:
+    stack: list[tuple[str, int]] = []
+    in_single = False
+    in_double = False
+    in_template = False
+    in_block_comment = False
+    in_line_comment = False
+    escape = False
+    line = 1
+    i = 0
+
+    pairs = {"(": ")", "{": "}", "[": "]"}
+    closing = {")": "(", "}": "{", "]": "["}
+
+    while i < len(source):
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
+
+        if ch == "\n":
+            line += 1
+            in_line_comment = False
+
+        if in_line_comment:
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if in_single or in_double or in_template:
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if in_single and ch == "'":
+                in_single = False
+            elif in_double and ch == '"':
+                in_double = False
+            elif in_template and ch == "`":
+                in_template = False
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            i += 2
+            continue
+        if ch == "'":
+            in_single = True
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            i += 1
+            continue
+        if ch == "`":
+            in_template = True
+            i += 1
+            continue
+
+        if ch in pairs:
+            stack.append((ch, line))
+            i += 1
+            continue
+        if ch in closing:
+            if not stack or stack[-1][0] != closing[ch]:
+                return f"Syntax mismatch in {path} line {line}: unexpected '{ch}'"
+            stack.pop()
+
+        i += 1
+
+    if in_single or in_double or in_template:
+        return f"Unterminated string literal in {path}"
+    if in_block_comment:
+        return f"Unterminated block comment in {path}"
+    if stack:
+        opener, opener_line = stack[-1]
+        expected = pairs[opener]
+        return f"Syntax mismatch in {path} line {opener_line}: missing '{expected}'"
     return None
+
+
+def _check_jsts_imports(path: str, source: str, file_paths: set[str]) -> list[str]:
+    errors: list[str] = []
+    for match in _TS_IMPORT_RE.finditer(source):
+        spec = match.group(1) or match.group(2) or ""
+        if not spec.startswith("."):
+            continue
+        if not _resolve_jsts_import(path, spec, file_paths):
+            errors.append(
+                f"JS/TS import in {path} does not resolve in snapshot: '{spec}'"
+            )
+    return errors
+
+
+def _resolve_jsts_import(path: str, spec: str, file_paths: set[str]) -> bool:
+    base_dir = posixpath.dirname(path)
+    target = posixpath.normpath(posixpath.join(base_dir, spec))
+    target = target.lstrip("./")
+
+    extensions = (".ts", ".tsx", ".js", ".jsx", ".json")
+    candidates = [target]
+
+    if not target.endswith(extensions):
+        candidates.extend([f"{target}{ext}" for ext in extensions])
+        candidates.extend([f"{target}/index{ext}" for ext in extensions])
+
+    return any(candidate in file_paths for candidate in candidates)

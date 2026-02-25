@@ -1,44 +1,52 @@
-"""Prompt templates for code generation.
-
-Used by the ``WriteCode`` orchestrator node to produce source files from
-the approved tech plan and design specification.
-"""
+"""Prompt templates for phased code generation."""
 from __future__ import annotations
 
 import json
 from typing import Any
 
-_SYSTEM_PROMPT = """\
-You are an expert full-stack software engineer.  Given an approved
-Technical Plan and optional Design Specification, generate production-
-quality source code that implements the described project.
+_SYSTEM_PROMPT_FULL = """\
+You are an expert full-stack software engineer. Given approved artifacts, generate
+production-quality project code.
 
-Guidelines:
+Rules:
 1. Follow the technology stack and architecture from the tech plan exactly.
-2. Produce complete, runnable files — not snippets or placeholders.
-3. Include sensible defaults, error handling, and inline comments.
-4. Write idiomatic code for the chosen language/framework.
-5. Include a dependency manifest (e.g. requirements.txt or package.json).
-6. Include configuration files needed to build and run the project.
-7. Every import must resolve to another file in the set or a declared dependency.
-8. Do NOT include secrets, API keys, or credentials — use environment variables.
+2. Produce complete, runnable files; no placeholders.
+3. Include dependency manifests and runtime configuration.
+4. Every local import must resolve to another file in the set.
+5. Never include secrets. Use environment variables.
 
-You MUST return your output as a single valid JSON object matching this schema:
-
+You MUST return a single valid JSON object:
 {
   "files": [
-    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"},
-    ...
+    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"}
   ],
   "build_command": "npm run build",
   "test_command": "npm test",
   "entry_point": "backend/app/main.py"
 }
 
-Return ONLY the JSON object — no markdown fences, no preamble, no commentary.
+Return ONLY JSON.
 """
 
-_USER_PROMPT = """\
+_SYSTEM_PROMPT_CHUNK = """\
+You are an expert full-stack software engineer. Generate ONE phased chunk of files.
+
+Rules:
+1. Output only files for the requested phase.
+2. Use complete, production-ready content.
+3. Do not include secrets; use env vars.
+4. Keep imports consistent with already-generated files.
+5. Return only valid JSON with this shape:
+{
+  "files": [
+    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"}
+  ]
+}
+
+Return ONLY JSON.
+"""
+
+_USER_PROMPT_FULL = """\
 Generate the complete source code for the project based on the following artifacts.
 
 ## Technical Plan
@@ -55,10 +63,10 @@ configuration files, database migrations, and dependency manifests.  Follow the 
 folder structure from the tech plan.
 """
 
-_USER_PROMPT_WITH_FEEDBACK = """\
-Generate revised source code.  A previous version was rejected by the security \
-gate with the findings shown below — fix EVERY issue while keeping the project \
-fully functional.
+_USER_PROMPT_WITH_FEEDBACK_FULL = """\
+Generate revised source code. A previous version was rejected by the security
+gate. Fix these security issues:
+{feedback}
 
 ## Technical Plan
 {tech_plan_content}
@@ -69,15 +77,49 @@ fully functional.
 ## PRD Summary
 {prd_content}
 
-## Security Findings (MUST FIX)
-{feedback}
-
 ## Previous Code Snapshot
 {previous_code}
 
-Fix all security findings.  Do not introduce regressions.  Return the complete \
-updated file set.
+Fix all findings without regressions. Return the complete updated file set.
 """
+
+_USER_PROMPT_CHUNK = """\
+Generate only the {chunk_label} files for this project.
+
+Chunk-specific requirements:
+{chunk_requirements}
+
+## Technical Plan
+{tech_plan_content}
+
+## Design Specification
+{design_spec_content}
+
+## PRD Summary
+{prd_content}
+
+## Files generated in previous chunks
+{generated_files}
+{security_feedback_block}
+{previous_code_block}
+Return only JSON with a `files` array for this phase.
+"""
+
+_CHUNK_REQUIREMENTS = {
+    "backend": (
+        "Create backend API routes, domain models, and services using tech plan "
+        "`api_routes` and `database_schema`."
+    ),
+    "frontend": (
+        "Create frontend pages/components using tech plan `component_hierarchy` "
+        "and design `screens`."
+    ),
+    "config": (
+        "Create configuration/manifests (requirements/package manifests, Docker, env examples, "
+        "framework config files) needed to build and run."
+    ),
+    "migrations": "Create database migration files aligned with the defined schema.",
+}
 
 
 def _serialize(artifact: Any) -> str:
@@ -101,10 +143,28 @@ def _serialize_code_snapshot(artifact: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _serialize_generated_files(files: list[dict[str, Any]] | None) -> str:
+    """Serialize previously generated chunk files with conservative truncation."""
+    if not files:
+        return "(none yet)"
+
+    parts: list[str] = []
+    for file_data in files[:20]:
+        path = file_data.get("path", "?")
+        language = file_data.get("language", "")
+        content = str(file_data.get("content", ""))
+        if len(content) > 2000:
+            content = content[:2000] + "\n# ...truncated for context..."
+        parts.append(f"### {path}\n```{language}\n{content}\n```")
+    return "\n\n".join(parts)
+
+
 def build_prompts(
     *,
     previous_artifacts: dict[str, Any] | None = None,
     feedback: str | None = None,
+    chunk: str = "full_snapshot",
+    generated_files: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Return ``(system_prompt, user_prompt)`` for code generation.
 
@@ -114,26 +174,81 @@ def build_prompts(
         Should contain ``"tech_plan"`` and optionally ``"design_spec"`` and ``"prd"``.
     feedback:
         Optional security-gate findings from a previous code review.
+    chunk:
+        Generation scope. Use one of ``backend``, ``frontend``, ``config``,
+        ``migrations`` for phased generation; default ``full_snapshot``.
+    generated_files:
+        Files already generated in previous phases for context.
     """
     arts = previous_artifacts or {}
     tech_plan = _serialize(arts.get("tech_plan"))
     design_spec = _serialize(arts.get("design_spec"))
     prd = _serialize(arts.get("prd"))
 
-    if feedback:
-        previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
-        user_prompt = _USER_PROMPT_WITH_FEEDBACK.format(
-            tech_plan_content=tech_plan,
-            design_spec_content=design_spec,
-            prd_content=prd,
-            feedback=feedback,
-            previous_code=previous_code,
-        )
-    else:
-        user_prompt = _USER_PROMPT.format(
-            tech_plan_content=tech_plan,
-            design_spec_content=design_spec,
-            prd_content=prd,
-        )
+    if chunk == "full_snapshot":
+        if feedback:
+            previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
+            user_prompt = _USER_PROMPT_WITH_FEEDBACK_FULL.format(
+                tech_plan_content=tech_plan,
+                design_spec_content=design_spec,
+                prd_content=prd,
+                feedback=feedback,
+                previous_code=previous_code,
+            )
+        else:
+            user_prompt = _USER_PROMPT_FULL.format(
+                tech_plan_content=tech_plan,
+                design_spec_content=design_spec,
+                prd_content=prd,
+            )
+        return _SYSTEM_PROMPT_FULL, user_prompt
 
-    return _SYSTEM_PROMPT, user_prompt
+    chunk_requirements = _CHUNK_REQUIREMENTS.get(chunk, _CHUNK_REQUIREMENTS["backend"])
+    security_feedback_block = ""
+    previous_code_block = ""
+    if feedback:
+        security_feedback_block = f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
+        previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
+        previous_code_block = f"\n## Previous Code Snapshot\n{previous_code}\n"
+
+    user_prompt = _USER_PROMPT_CHUNK.format(
+        chunk_label=chunk,
+        chunk_requirements=chunk_requirements,
+        tech_plan_content=tech_plan,
+        design_spec_content=design_spec,
+        prd_content=prd,
+        generated_files=_serialize_generated_files(generated_files),
+        security_feedback_block=security_feedback_block,
+        previous_code_block=previous_code_block,
+    )
+
+    return _SYSTEM_PROMPT_CHUNK, user_prompt
+
+
+def build_full_snapshot_prompts(
+    *,
+    previous_artifacts: dict[str, Any] | None = None,
+    feedback: str | None = None,
+) -> tuple[str, str]:
+    """Compatibility wrapper for existing tests/callers expecting full mode."""
+    return build_prompts(
+        previous_artifacts=previous_artifacts,
+        feedback=feedback,
+        chunk="full_snapshot",
+    )
+
+
+def build_chunk_prompts(
+    *,
+    chunk: str,
+    previous_artifacts: dict[str, Any] | None = None,
+    feedback: str | None = None,
+    generated_files: list[dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    """Convenience wrapper for phased generation prompts."""
+    return build_prompts(
+        previous_artifacts=previous_artifacts,
+        feedback=feedback,
+        chunk=chunk,
+        generated_files=generated_files,
+    )
