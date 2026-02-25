@@ -1,100 +1,185 @@
-# Technical Implementation Plan: ID8
+# Technical Implementation Plan: ID8 MVP v2
 
-## 1. System Architecture
+## 1. Architecture Overview
+ID8 uses a persisted orchestration backend to manage project state, HITL gates, and provider integrations.
 
-The system will utilize a centralized orchestration backend that manages the state of each project and communicates with external services via the Model Context Protocol (MCP).
+### Core Components
+1. Frontend: Next.js operator console for prompt intake, artifact review, approvals, and run monitoring.
+2. Orchestrator API: FastAPI service exposing project/run endpoints and state transitions.
+3. Worker runtime: async job processor for long-running model and provider steps.
+4. Database: PostgreSQL (Supabase-hosted) for state, artifacts, approvals, retries, and audit logs.
+5. LLM router: model-profile based routing for planning vs tool-heavy execution.
+6. Provider adapters:
+`stitch_mcp`, `github_api`, `supabase_api`, `vercel_api`, optional MCP adapters behind feature flags.
 
+### Model Routing
+1. `primary` -> `gemini-3.1-pro-preview`
+2. `customtools` -> `gemini-3.1-pro-preview-customtools`
+3. `fallback` -> `gemini-2.5-pro`
 
+## 2. Canonical Domain Types
+### Enums
+1. `DesignProvider = stitch_mcp | internal_spec | manual_upload`
+2. `ModelProfile = primary | customtools | fallback`
+3. `ProjectStatus = ideation | prd_draft | prd_approved | design_draft | design_approved | tech_plan_draft | tech_plan_approved | codegen | security_gate | deploy_ready | deploying | deployed | failed`
+4. `ApprovalStage = prd | design | tech_plan | deploy`
 
-* **Frontend Client:** Next.js (React) web app where users input ideas and approve AI outputs (Human-in-the-Loop gates).
-* **API & Orchestration Backend:** Python (FastAPI). Python is highly recommended if using LangGraph for complex state machine orchestration.
-* **State Management Database:** PostgreSQL (hosted on Supabase) to track user sessions, project metadata, and the current state of the AI agent.
-* **LLM Engine:** Gemini
-* **External Integrations (MCP Servers):** 
-    * Stitch MCP (UI generation)
-    * GitHub MCP (Source control)
-    * Supabase MCP (BaaS provisioning)
-    * Vercel MCP (Frontend hosting)
+### Artifact Types
+1. `prd`
+2. `design_spec`
+3. `tech_plan`
+4. `code_snapshot`
+5. `security_report`
+6. `deploy_report`
 
----
+## 3. API Surface (MVP)
+1. `POST /v1/projects`
+2. `GET /v1/projects/{id}`
+3. `POST /v1/projects/{id}/runs`
+4. `POST /v1/projects/{id}/design/generate`
+5. `POST /v1/projects/{id}/design/feedback`
+6. `POST /v1/projects/{id}/approvals`
+7. `GET /v1/projects/{id}/artifacts`
+8. `POST /v1/projects/{id}/deploy`
 
-## 2. Internal Database Schema
+### Key Contract Rules
+1. Every mutating endpoint supports an idempotency key.
+2. Every run step writes a structured artifact or failure record.
+3. `deploy` calls are rejected unless `ApprovalStage=deploy` is approved.
 
-To make the system frictionless and resumable, ID8 AI needs to track the state of every generated application.
+## 4. Database Schema (Logical)
+### `users`
+1. `id` uuid primary key
+2. `email` text unique
+3. `role` text check in (`operator`, `admin`)
+4. `created_at`, `updated_at`
 
-**Table: `users`**
-* `id` (UUID, Primary Key)
-* `email` (String)
-* `MCP/AI Tokens and API keys` (Encrypted String)
+### `projects`
+1. `id` uuid primary key
+2. `owner_user_id` uuid references `users(id)`
+3. `initial_prompt` text not null
+4. `status` project_status_enum not null
+5. `github_repo_url` text null
+6. `live_deployment_url` text null
+7. `created_at`, `updated_at`
 
+### `project_runs`
+1. `id` uuid primary key
+2. `project_id` uuid references `projects(id)`
+3. `status` project_status_enum not null
+4. `current_node` text not null
+5. `idempotency_key` text unique
+6. `last_error_code` text null
+7. `last_error_message` text null
+8. `created_at`, `updated_at`
 
-**Table: `projects`**
-* `id` (UUID, Primary Key)
-* `user_id` (UUID, Foreign Key)
-* `initial_prompt` (Text)
-* `status` (Enum: `ideation`, `design`, `coding`, `deploying`, `completed`, `failed`)
-* `github_repo_url` (String, Nullable)
-* `live_deployment_url` (String, Nullable)
+### `project_artifacts`
+1. `id` uuid primary key
+2. `project_id` uuid references `projects(id)`
+3. `run_id` uuid references `project_runs(id)`
+4. `artifact_type` artifact_type_enum not null
+5. `version` int not null
+6. `content` jsonb not null
+7. `model_profile` model_profile_enum null
+8. `created_at`
 
-**Table: `project_artifacts`**
-* `id` (UUID, Primary Key)
-* `project_id` (UUID, Foreign Key)
-* `artifact_type` (Enum: `prd`, `design_spec`, `tech_plan`, `codebase_snapshot`, `MCP_info (Stitch, GitHub, Supabase, Vercel)`)
-* `content` (JSONB)
-* `approved_by_user` (Boolean, Default: false)
+### `approval_events`
+1. `id` uuid primary key
+2. `project_id` uuid references `projects(id)`
+3. `run_id` uuid references `project_runs(id)`
+4. `stage` approval_stage_enum not null
+5. `decision` text check in (`approved`, `rejected`)
+6. `notes` text null
+7. `created_by` uuid references `users(id)`
+8. `created_at`
 
----
+### `provider_credentials`
+1. `id` uuid primary key
+2. `user_id` uuid references `users(id)`
+3. `provider` text not null
+4. `encrypted_secret` text not null
+5. `secret_scope` text not null
+6. `last_rotated_at` timestamptz null
+7. `created_at`, `updated_at`
 
-## 3. Agent State Machine Flow
+### `audit_events`
+1. `id` uuid primary key
+2. `project_id` uuid null references `projects(id)`
+3. `actor_user_id` uuid null references `users(id)`
+4. `event_type` text not null
+5. `event_payload` jsonb not null
+6. `created_at`
 
-Because this system requires Human-in-the-Loop (HITL) interventions, a standard linear script will fail. We must implement a state machine (e.g., using LangGraph or AWS Step Functions).
+## 5. State Machine
+### Nodes
+1. `IngestPrompt`
+2. `GeneratePRD`
+3. `WaitPRDApproval`
+4. `GenerateDesign` (provider defaults to `stitch_mcp`)
+5. `WaitDesignApproval`
+6. `GenerateTechPlan`
+7. `WaitTechPlanApproval`
+8. `WriteCode`
+9. `SecurityGate`
+10. `PreparePR`
+11. `WaitDeployApproval`
+12. `DeployProduction`
+13. `EndSuccess`
+14. `EndFailed`
 
+### Transition Rules
+1. Rejection at PRD, design, or tech plan loops back to corresponding generation node with structured feedback payload.
+2. Security failure loops to `WriteCode` with failing findings context.
+3. Deploy requires explicit `deploy` approval event.
+4. Any non-retryable provider failure transitions to `EndFailed` with resume metadata.
 
+## 6. Integration Strategy
+### Production-Critical Path
+1. GitHub: native REST/GraphQL APIs for repo, branch, pull request, and checks state.
+2. Supabase: native management and SQL migration path.
+3. Vercel: native deployment APIs.
 
-**The State Nodes & Edges:**
+### MCP Strategy
+1. Stitch MCP is first-class for design generation.
+2. Optional MCP adapters for GitHub/Vercel/Supabase are feature flagged and non-default.
 
-1.  **Node `Ingest_Prompt`** -> Transitions to `Generate_PRD`
-2.  **Node `Generate_PRD`** -> Transitions to `Wait_PRD_Approval`
-3.  **Gate `Wait_PRD_Approval`**:
-    * If User Edits/Rejects -> Loop back to `Generate_PRD` with feedback.
-    * If User Approves -> Transition to `Generate_Design`
-4.  **Node `Generate_Design`** (Calls Stitch MCP) -> Transitions to `Wait_Design_Approval`
-5.  **Gate `Wait_Design_Approval`**:
-    * If User Edits/Rejects -> Loop back to `Generate_Design` with UI feedback.
-    * If User Approves -> Transition to `Generate_Tech_Plan`
-6.  **Node `Generate_Tech_Plan`** -> Transitions to `Write_Code`
-7.  **Node `Write_Code`** -> Transitions to `Security_Audit`
-    * *Loop:* If `Security_Audit` fails -> Loop back to `Write_Code` with error context.
-    * If `Security_Audit` passes -> Transition to `Commit_To_Repo`
-8.  **Node `Commit_To_Repo`** (Calls GitHub MCP) -> Transitions to `Deploy_Infrastructure`
-9.  **Node `Deploy_Infrastructure`** (Calls Supabase & Vercel MCPs) -> Transitions to `End_Success`
+## 7. Security and Secrets
+1. Service-role and server-only keys stay backend-only.
+2. Frontend receives publishable runtime values only.
+3. Secrets are encrypted at rest and redacted in logs.
+4. Security gate blocks deploy on unresolved high/critical findings.
 
----
+## 8. SLOs and Observability
+### Performance Targets
+1. PRD generation p50 <= 45s, p95 <= 120s.
+2. Design generation p50 <= 90s, p95 <= 240s.
+3. End-to-end build and deploy p50 <= 12m, p95 <= 30m.
 
-## 4. Phased Engineering Execution
+### Required Metrics
+1. Node latency histogram by run step.
+2. Retry count and terminal failure reasons.
+3. Token usage and cost by model profile.
+4. Deployment success rate and time-to-live-url.
 
-To avoid integration hell, the engineering team should build this in four distinct phases:
+## 9. Agent Execution Sequence
+1. Docs: align PRD and technical docs to v2.
+2. Contracts: publish OpenAPI and shared enums.
+3. Orchestrator: implement persisted state machine and idempotency.
+4. Design: implement Stitch MCP adapter and fallback provider.
+5. LLM: configure model profiles and router.
+6. Codegen: implement file generation pipeline from approved artifacts.
+7. Security: wire SAST, dependency audit, and secret scan gate.
+8. GitHub: implement branch, PR, checks, merge workflow.
+9. Deploy: implement Supabase and Vercel native provisioning/deploy.
+10. Observability: emit structured metrics and traces.
+11. QA: run acceptance suite and publish go/no-go.
 
-### Phase 1: The Core Platform & HITL Framework
-* Set up the Next.js frontend and the backend API.
-* Implement user authentication.
-* Build the database schema to track projects and artifacts.
-* **Goal:** A user can log in, submit a prompt, and the system saves it to the database, marking the status as "pending".
-
-### Phase 2: Orchestration & AI Content Generation
-* Integrate the LLM and build the agent state machine logic.
-* Implement the prompt chains for PRD generation and Technical Plan generation.
-* Build the interactive UI components that allow users to view, edit, and approve the PRD and Tech Plan (the HITL gates).
-* **Goal:** The system can guide a user from a prompt to a finalized, approved technical architecture document.
-
-### Phase 3: The MCP Integration Layer (The Heavy Lifting)
-* Implement OAuth flows for Stitch, GitHub, Vercel, and Supabase so Genesis AI has permission to act on the user's behalf.
-* Integrate the Stitch MCP for generating UI definitions based on the approved PRD.
-* Integrate the GitHub MCP to create repos and push code.
-* **Goal:** The system can successfully talk to external tools and manage credentials securely.
-
-### Phase 4: Autonomous Coding & Deployment
-* Implement the `Write_Code` node. Give the LLM tools to create files, write boilerplate, and implement components based on the Tech Plan.
-* Implement the automated Security Audit prompt chain.
-* Connect the final outputs to the Vercel and Supabase MCPs to execute the deployment.
-* **Goal:** The fully realized system where approved code is automatically shipped to a live URL.
+## 10. Validation Scenarios
+1. Happy path prompt to production URL.
+2. Design feedback loop with versioned artifacts.
+3. Stitch outage fallback to `internal_spec`.
+4. Model routing correctness by node type.
+5. Security failure blocks deployment.
+6. Branch protection prevents direct push.
+7. Resume from failure without artifact loss.
+8. No server-only credentials in frontend artifacts.

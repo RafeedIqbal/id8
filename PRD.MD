@@ -1,107 +1,133 @@
-# Product Requirements Document (PRD): ID8
+# Product Requirements Document (PRD): ID8 MVP v2
 
 ## 1. Executive Summary
-**Product Name:** ID8
-**Vision:** To democratize software creation by providing a frictionless, end-to-end AI system that transforms a user's natural language web app idea into a fully implemented, secure, and deployed Minimum Viable Product (MVP) in minutes.
-**Core Value Proposition:** ID8 acts as an autonomous product manager, designer, software engineer, security auditor, and DevOps engineer, governed by a Human-In-The-Loop (HITL) approval process to ensure accuracy and alignment with the user's vision.
+**Product Name:** ID8  
+**Release Mode:** Internal operator tool (MVP)  
+**Vision:** Turn a natural language app concept into a production web app with explicit Human-In-The-Loop (HITL) approvals.  
+**Core Value Proposition:** A stateful AI system that generates product artifacts, code, and deployment outputs while preserving review gates, security controls, and auditability.
 
----
+This v2 PRD sets these product defaults:
+1. Stitch MCP is a first-class design generation provider.
+2. Gemini 3.1 Pro is the default LLM family.
+3. Deployment critical steps use native APIs first, with MCP as optional adapters.
 
-## 2. Target Audience
-* **Non-Technical Founders/Entrepreneurs:** Looking to rapidly validate ideas without hiring an entire engineering team.
-* **Product Managers & Designers:** Prototyping realistic, functional applications for user testing and stakeholder buy-in.
-* **Software Engineers:** Accelerating boilerplate creation, MVP scaffolding, and CI/CD setup to focus on complex business logic later.
+## 2. Goals and Non-Goals
+### Goals
+1. Go from prompt to production URL with explicit approval gates.
+2. Keep all artifacts versioned and resumable.
+3. Enforce pre-deploy security checks.
+4. Support iterative design refinement before code generation.
 
----
+### Non-Goals (MVP)
+1. Fully self-serve external SaaS onboarding.
+2. Native mobile app generation.
+3. Legacy monolith migration and large repository import.
+4. Post-deploy analytics product suite.
 
+## 3. Target Audience
+1. Internal operators building MVPs for founders and product teams.
+2. Product teams validating new workflows quickly with production-like outputs.
+3. Engineers accelerating first implementation drafts with approved architecture and security gates.
 
+## 4. User Flow and Approval Gates
+The system follows a strict state machine with resumable checkpoints.
 
-## 3. User Flow & Journey
-The system relies on a sequential, state-machine-like flow with distinct approval gates.
+1. User submits prompt and constraints.
+2. System generates PRD draft.
+3. Gate 1: PRD approve or request revision.
+4. System generates design artifacts via Stitch MCP.
+5. Gate 2: design approve or request targeted screen revisions.
+6. System generates technical plan.
+7. Gate 3: technical plan approve or request revision.
+8. System generates code and runs quality checks.
+9. System runs mandatory security gate.
+10. System opens Git branch and pull request, executes checks, merges on pass.
+11. Gate 4: explicit deploy approval.
+12. System deploys to production and returns deployment report.
 
-1.  **Ideation:** User inputs a natural language prompt describing their web app idea.
-2.  **Product Definition:** AI generates a structured PRD for the MVP.
-3.  **Gate 1 (PRD Approval):** User reviews, edits, and approves the PRD.
-4.  **Design Generation:** AI leverages Google Stitch MCP to generate UI/UX designs based on the approved PRD.
-5.  **Gate 2 (Design Approval):** User reviews, edits, and approves the proposed screens.
-6.  **Planning:** AI generates a technical implementation plan (architecture, database schema, component tree).
-7.  **Implementation:** AI writes Frontend and Backend code.
-8.  **Security Audit:** AI runs a static code analysis and security check.
-9.  **Version Control:** AI commits and pushes the codebase to a repository using GitHub MCP.
-10. **Deployment:** AI provisions infrastructure and deploys using Vercel MCP (Frontend) and Supabase MCP (Backend/Database).
+## 5. Functional Requirements
+### Module 1: Prompt Intake and Product Definition
+1. Accept multi-paragraph text, attachments, and constraints.
+2. Produce structured PRD with user stories, scope boundaries, and entity list.
+3. Allow section-level edit, reject, and approve actions.
 
----
+### Module 2: Design Engine
+1. Translate approved PRD into design prompt constraints.
+2. Use `DesignProvider` with these values:
+`stitch_mcp | internal_spec | manual_upload`.
+3. Generate screen-level outputs and maintain version history.
+4. Support iterative feedback by screen and component target.
 
-## 4. Functional Requirements
+### Module 3: Planning and LLM Routing
+1. Produce technical plan with folder structure, DB schema, API routes, and component hierarchy.
+2. Route models by node type:
+`planning/reasoning => gemini-3.1-pro-preview`  
+`tool-heavy coding/orchestration => gemini-3.1-pro-preview-customtools`  
+`fallback => gemini-2.5-pro`
+3. Record model and prompt metadata for every generated artifact.
 
-### Module 1: Input & Product Definition Engine
-* **FR1.1 Prompt Ingestion:** The UI must accept multi-paragraph text, file uploads (e.g., rough sketches), and clarifying constraints (e.g., "Must be mobile-first").
-* **FR1.2 PRD Generation:** The LLM must output a structured PRD containing:
-    * Core User Stories
-    * Out of Scope (MVP constraints)
-    * Data Models/Entities
-* **FR1.3 Interactive Editor:** The UI must allow users to accept, reject, or manually edit sections of the generated PRD before proceeding.
+### Module 4: Code Generation and Security
+1. Generate backend and frontend code from approved artifacts.
+2. Run mandatory security gate before deploy:
+SAST, dependency audit, and secret scanning.
+3. Block deployment on unresolved critical/high findings.
+4. Persist machine-readable security report artifacts.
 
-### Module 2: Design Engine (Google Stitch MCP Integration)
-* **FR2.1 Context Handoff:** System must translate the approved PRD into prompt constraints optimized for the Google Stitch MCP.
-* **FR2.2 Screen Generation:** Generate distinct mockups/wireframes for all key user flows identified in the PRD.
-* **FR2.3 Visual Editor:** User must be able to leave comments on specific UI elements to trigger iterative AI regenerations ("Make this button blue", "Move this form to a modal").
+### Module 5: Repository and Merge Workflow
+1. Authenticate GitHub access.
+2. Create repository if missing.
+3. Push to generated branch, open pull request, run checks, merge on pass.
+4. Direct push to `main` is disallowed for automation.
 
-### Module 3: Engineering & Planning Engine
-* **FR3.1 Tech Stack Selection:** Default to a modern, compatible stack (e.g., Next.js/React for Frontend, Supabase/PostgreSQL for Backend) unless overridden by the user.
-* **FR3.2 Implementation Plan Generation:** Output a step-by-step technical plan including:
-    * Folder structure
-    * Database schema (SQL/Supabase schema)
-    * API route definitions
-    * Component hierarchy
+### Module 6: Deployment
+1. Provision and configure Supabase and Vercel via native APIs for production-critical reliability.
+2. Keep MCP adapters optional and feature-flagged.
+3. Inject only publishable keys into frontend runtime.
+4. Keep server-only credentials on backend only.
 
-### Module 4: Code Generation & Security
-* **FR4.1 Autonomous Coding:** The AI agent writes functional code file-by-file based on the implementation plan and approved Stitch designs.
-* **FR4.2 Security Audit:** Run an automated LLM-based (and optionally rule-based, like ESLint/SonarQube) security pass.
-    * *Checks:* SQL injection, XSS vulnerabilities, exposed API keys, insecure authentication flows.
-    * *Action:* Auto-remediate found issues and log them for the user.
+### Module 7: Operator Visibility
+1. Show status timeline for every project run.
+2. Show retries, failures, and resume actions.
+3. Show model usage and token-cost summaries.
 
-### Module 5: DevOps & Deployment Engine
-* **FR5.1 GitHub MCP Integration:**
-    * Authenticate via OAuth.
-    * Create a new private/public repository.
-    * Commit all generated code with descriptive commit messages.
-    * Push to `main`.
-* **FR5.2 Supabase MCP Integration:**
-    * Provision a new Supabase project.
-    * Execute SQL migrations to set up the database schema and Row Level Security (RLS) policies.
-    * Retrieve API keys/secrets for frontend environment variables.
-* **FR5.3 Vercel MCP Integration:**
-    * Provision a new Vercel project linked to the GitHub repository.
-    * Inject environment variables (Supabase URL, Anon Key).
-    * Trigger initial build and deployment.
-    * Return the live staging/production URL to the user.
+## 6. Public Interfaces and Types
+### Enums
+1. `DesignProvider = stitch_mcp | internal_spec | manual_upload`
+2. `ModelProfile = primary | customtools | fallback`
+3. `ProjectStatus = ideation | prd_draft | prd_approved | design_draft | design_approved | tech_plan_draft | tech_plan_approved | codegen | security_gate | deploy_ready | deploying | deployed | failed`
 
----
+### Required API Endpoints
+1. `POST /v1/projects/{id}/design/generate` with `provider`, `model_profile`, and `prompt_constraints`.
+2. `POST /v1/projects/{id}/design/feedback` for targeted regeneration.
+3. `POST /v1/projects/{id}/approvals` with `stage=prd|design|tech_plan|deploy`.
 
-## 5. Non-Functional Requirements (NFRs)
+## 7. Non-Functional Requirements
+### Performance SLOs
+1. PRD generation: p50 <= 45s, p95 <= 120s.
+2. Design generation: p50 <= 90s, p95 <= 240s.
+3. Full build and deploy: p50 <= 12m, p95 <= 30m.
 
-* **Performance:** PRD and Design generation should take < 30 seconds each. Full code generation and deployment should take < 5 minutes.
-* **Reliability (Error Handling):** If an MCP fails (e.g., Vercel API timeout), the system must have retry logic and gracefully surface the error to the user without losing the generated codebase.
-* **Security:** User prompts and generated code must be siloed. The platform must securely manage OAuth tokens for GitHub, Vercel, and Supabase without storing them in plaintext.
-* **Extensibility:** The system architecture must rely on the Model Context Protocol (MCP) to easily swap or add future integrations (e.g., AWS MCP, Figma MCP).
+### Reliability
+1. Retries with backoff for transient provider failures.
+2. Idempotency keys for run and deploy requests.
+3. Resume from last successful node after failure.
 
----
+### Security
+1. Encrypt provider credentials at rest.
+2. Redact secrets in logs and artifacts.
+3. Enforce role-based operator access and audit trails.
 
-## 6. Technical Architecture & Integrations
+### Extensibility
+1. Provider adapter interfaces isolate external integration logic.
+2. MCP and native API adapters share common contracts.
 
-* **Core Orchestrator:** LangChain / LlamaIndex or a custom state-machine agent framework (e.g., LangGraph) to manage the strict sequential flow.
-* **LLM Provider:** High-context models (e.g., Gemini 1.5 Pro) capable of holding the entire PRD, design specs, and codebase in context simultaneously.
-* **Integrations (Via Model Context Protocol):**
-    * `stitch-mcp`: For UI design generation.
-    * `github-mcp`: For repository management and source control.
-    * `vercel-mcp`: For frontend hosting and CI/CD pipelines.
-    * `supabase-mcp`: For Backend-as-a-Service, database provisioning, and auth setup.
+## 8. Assumptions and Defaults
+1. Stitch MCP setup docs are authoritative for integration.
+2. Gemini 3.1 Pro Preview is acceptable for MVP with explicit fallback.
+3. Internal operator tool is the go-to-market mode for MVP.
+4. Direct production deployment requires explicit final approval event.
 
----
-
-## 7. Out of Scope for MVP
-* Post-deployment analytics or monitoring.
-* Generating mobile applications (iOS/Android native); web apps only for MVP.
-* Complex legacy code migrations or importing existing GitHub repositories.
-* Custom domain purchasing and routing (uses default `.vercel.app` domains).
+## 9. References
+1. Stitch MCP setup: https://stitch.withgoogle.com/docs/mcp/setup/?pli=1
+2. Gemini models index: https://ai.google.dev/gemini-api/docs/models
+3. Gemini 3.1 Pro details: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
