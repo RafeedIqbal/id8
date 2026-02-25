@@ -5,28 +5,8 @@ end-to-end.  Real implementations are introduced in later tasks (05-09).
 """
 from __future__ import annotations
 
-from sqlalchemy import select
-
 from app.models.enums import ArtifactType
-from app.models.project import Project
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
-
-
-class IngestPromptHandler(NodeHandler):
-    """Extract the prompt from the project and pass it forward."""
-
-    async def execute(self, ctx: RunContext) -> NodeResult:
-        result = await ctx.db.execute(select(Project).where(Project.id == ctx.project_id))
-        result.scalar_one()
-        return NodeResult(outcome="success")
-
-
-class GeneratePRDHandler(NodeHandler):
-    async def execute(self, ctx: RunContext) -> NodeResult:
-        return NodeResult(
-            outcome="success",
-            artifact_data={"title": "Placeholder PRD", "sections": [], "source": "stub"},
-        )
 
 
 class GenerateDesignHandler(NodeHandler):

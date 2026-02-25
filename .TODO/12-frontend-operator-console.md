@@ -73,13 +73,27 @@ Build the Next.js operator console for prompt intake, artifact review, approval 
 - [ ] Submit → `POST /v1/projects/{id}/design/feedback`
 - [ ] Show new version when regeneration completes
 
-### 9. Model usage and cost display
+### 9. Stitch credential onboarding + tool visibility
+- [ ] When provider is `stitch_mcp`, require explicit auth setup before generation:
+  - API key mode (recommended): prompt user to create token in Stitch Settings -> API Keys -> Create API Key
+  - OAuth mode: collect access token + project ID for `Authorization` + `X-Goog-User-Project`
+- [ ] If backend returns "credentials required", render inline CTA with setup instructions and retry action
+- [ ] Never store secrets in localStorage or URL/query params
+- [ ] Show a read-only "Usable Stitch Tools" panel sourced from backend metadata:
+  - `create_project(name)`
+  - `list_projects(filter)`
+  - `list_screens(project_id)`
+  - `get_project(name)`
+  - `get_screen(project_id, screen_id)`
+  - `generate_screen_from_text(project_id, prompt, model_id)`
+
+### 10. Model usage and cost display
 - [ ] On project detail: summary card showing:
   - Total tokens used (prompt + completion)
   - Model profiles used per node
   - Estimated cost
 
-### 10. Real-time updates (stretch)
+### 11. Real-time updates (stretch)
 - [ ] Poll project status every 5s while a run is active
 - [ ] Update status timeline, show new artifacts as they appear
 - [ ] Show "Processing..." state for active nodes
@@ -88,6 +102,8 @@ Build the Next.js operator console for prompt intake, artifact review, approval 
 - [ ] Operator can create a project, view artifacts, approve/reject at each gate
 - [ ] Status timeline accurately reflects run progression
 - [ ] Design feedback creates new artifact versions visible in UI
+- [ ] Stitch generation flow prompts for API key creation when credentials are missing
+- [ ] Usable Stitch tool inventory is visible during design workflows
 - [ ] Security report is displayed with severity badges
 - [ ] Deployed URL is shown after successful deployment
 - [ ] All API calls use typed client matching OpenAPI contract

@@ -16,6 +16,8 @@ Execute all 8 acceptance scenarios from `qa/acceptance-test-plan.md`. Produce a 
 - [ ] Supabase test project with isolated database
 - [ ] Vercel test team credentials
 - [ ] Stitch MCP configured with valid test credentials
+  - API key path validated (X-Goog-Api-Key)
+  - OAuth path validated (Authorization bearer + X-Goog-User-Project)
 - [ ] Seed operator user with `admin` role
 - [ ] Environment config pointing to all test services
 
@@ -28,12 +30,15 @@ Execute all 8 acceptance scenarios from `qa/acceptance-test-plan.md`. Produce a 
 - [ ] **Assert**: all 6 artifact types exist (prd, design_spec, tech_plan, code_snapshot, security_report, deploy_report)
 
 ### 3. Scenario 2: Stitch Iteration Loop
+- [ ] Attempt design generation without Stitch credentials
+- [ ] **Assert**: UI/API returns actionable setup prompt to create API key in Stitch Settings
 - [ ] Generate initial design using `stitch_mcp`
 - [ ] Submit targeted feedback for one screen
 - [ ] Approve updated design
 - [ ] **Assert**: `design_spec` version increments
 - [ ] **Assert**: previous version remains accessible
 - [ ] **Assert**: feedback note is linked in artifact metadata
+- [ ] **Assert**: artifact metadata includes Stitch usable tool inventory
 
 ### 4. Scenario 3: Stitch Outage Fallback
 - [ ] Force Stitch MCP adapter error (mock/disconnect endpoint)

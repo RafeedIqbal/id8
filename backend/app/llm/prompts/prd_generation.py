@@ -12,18 +12,33 @@ You are an expert product manager and technical writer.  Your job is to
 produce a clear, comprehensive Product Requirements Document (PRD) for a
 software project based on the user's description.
 
-The PRD must include:
-1. **Executive Summary** — one-paragraph overview.
-2. **Problem Statement** — what pain-point or opportunity this addresses.
-3. **Goals & Success Metrics** — measurable outcomes.
-4. **User Personas** — at least two distinct personas.
-5. **Functional Requirements** — numbered list of capabilities.
-6. **Non-Functional Requirements** — performance, security, accessibility.
-7. **Scope & Constraints** — what is explicitly out of scope.
-8. **Timeline Estimate** — rough phases.
+You MUST respond with a single JSON object (no markdown fences, no preamble)
+matching this exact schema:
 
-Write in professional, concise English.  Use Markdown formatting.
-Return ONLY the PRD content — no preamble or meta-commentary.
+{
+  "executive_summary": "string — one-paragraph project overview",
+  "user_stories": [
+    {"persona": "string", "action": "string", "benefit": "string"}
+  ],
+  "scope_boundaries": {
+    "in_scope": ["string"],
+    "out_of_scope": ["string"]
+  },
+  "entity_list": [
+    {"name": "string", "description": "string"}
+  ],
+  "non_goals": ["string"]
+}
+
+Requirements:
+- executive_summary: concise paragraph covering purpose, target users, and value.
+- user_stories: at least 3 stories in "As a <persona>, I want <action> so that <benefit>" form.
+- scope_boundaries: explicit in-scope and out-of-scope items.
+- entity_list: key domain entities/objects the system will manage.
+- non_goals: items explicitly excluded from this project.
+
+Write in professional, concise English.
+Return ONLY valid JSON — no markdown, no commentary.
 """
 
 _USER_PROMPT = """\
@@ -33,14 +48,15 @@ Create a PRD for the following project idea:
 """
 
 _USER_PROMPT_WITH_FEEDBACK = """\
-Create a revised PRD for the following project idea.  A previous version
-was rejected with the feedback shown below — address every point.
+The previous PRD was rejected.  Revise it to address the feedback.
 
-## Project Idea
+Feedback: {feedback}
+
+Previous PRD:
+{previous_prd}
+
+Original project idea:
 {initial_prompt}
-
-## Reviewer Feedback
-{feedback}
 """
 
 
@@ -59,12 +75,27 @@ def build_prompts(
     feedback:
         Optional rejection feedback from a previous PRD review cycle.
     previous_artifacts:
-        Unused for PRD generation but accepted for interface consistency.
+        Previous artifact content dict — used to include the rejected PRD
+        when regenerating after rejection.
     """
     if feedback:
+        import json
+
+        prev_prd = ""
+        if previous_artifacts and "prd" in previous_artifacts:
+            prd_data = previous_artifacts["prd"]
+            # Strip internal metadata before including in prompt
+            prd_clean = {
+                k: v
+                for k, v in prd_data.items()
+                if not k.startswith("__")
+            }
+            prev_prd = json.dumps(prd_clean, indent=2)
+
         user_prompt = _USER_PROMPT_WITH_FEEDBACK.format(
             initial_prompt=initial_prompt,
             feedback=feedback,
+            previous_prd=prev_prd or "(no previous PRD available)",
         )
     else:
         user_prompt = _USER_PROMPT.format(initial_prompt=initial_prompt)
