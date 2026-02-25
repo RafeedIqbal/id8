@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -10,11 +11,12 @@ from app.models.enums import ProjectStatus
 
 class CreateProjectRequest(BaseModel):
     initial_prompt: str
-    constraints: dict | None = None
+    constraints: dict[str, Any] | None = None
 
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
+    owner_user_id: uuid.UUID
     initial_prompt: str
     status: ProjectStatus
     github_repo_url: str | None = None

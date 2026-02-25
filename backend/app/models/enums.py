@@ -3,19 +3,19 @@ from __future__ import annotations
 import enum
 
 
-class DesignProvider(str, enum.Enum):
+class DesignProvider(enum.StrEnum):
     STITCH_MCP = "stitch_mcp"
     INTERNAL_SPEC = "internal_spec"
     MANUAL_UPLOAD = "manual_upload"
 
 
-class ModelProfile(str, enum.Enum):
+class ModelProfile(enum.StrEnum):
     PRIMARY = "primary"
     CUSTOMTOOLS = "customtools"
     FALLBACK = "fallback"
 
 
-class ProjectStatus(str, enum.Enum):
+class ProjectStatus(enum.StrEnum):
     IDEATION = "ideation"
     PRD_DRAFT = "prd_draft"
     PRD_APPROVED = "prd_approved"
@@ -31,7 +31,7 @@ class ProjectStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class ArtifactType(str, enum.Enum):
+class ArtifactType(enum.StrEnum):
     PRD = "prd"
     DESIGN_SPEC = "design_spec"
     TECH_PLAN = "tech_plan"
@@ -40,8 +40,29 @@ class ArtifactType(str, enum.Enum):
     DEPLOY_REPORT = "deploy_report"
 
 
-class ApprovalStage(str, enum.Enum):
+class ApprovalStage(enum.StrEnum):
     PRD = "prd"
     DESIGN = "design"
     TECH_PLAN = "tech_plan"
     DEPLOY = "deploy"
+
+
+# Compatibility aliases matching the Task 01 naming convention.
+DesignProviderEnum = DesignProvider
+ModelProfileEnum = ModelProfile
+ProjectStatusEnum = ProjectStatus
+ArtifactTypeEnum = ArtifactType
+ApprovalStageEnum = ApprovalStage
+
+__all__ = [
+    "ApprovalStage",
+    "ApprovalStageEnum",
+    "ArtifactType",
+    "ArtifactTypeEnum",
+    "DesignProvider",
+    "DesignProviderEnum",
+    "ModelProfile",
+    "ModelProfileEnum",
+    "ProjectStatus",
+    "ProjectStatusEnum",
+]

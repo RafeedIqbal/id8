@@ -12,9 +12,13 @@ from alembic import context
 config = context.config
 
 # Override sqlalchemy.url from environment variable if set
-database_url = os.environ.get("DATABASE_URL", "").replace(
-    "postgresql+asyncpg://", "postgresql://"
+database_url = (
+    os.environ.get("DATABASE_URL", "")
+    .replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    .replace("postgresql://", "postgresql+psycopg://")
 )
+# Avoid double-replacing if already using psycopg
+database_url = database_url.replace("postgresql+psycopg+psycopg://", "postgresql+psycopg://")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 

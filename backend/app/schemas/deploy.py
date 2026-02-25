@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DeployRequest(BaseModel):
@@ -16,7 +16,7 @@ class DeploymentRecordResponse(BaseModel):
     project_id: uuid.UUID
     environment: str
     status: str
-    url: str | None = None
+    url: str | None = Field(default=None, validation_alias="deployment_url")
     created_at: datetime
 
     model_config = {"from_attributes": True}

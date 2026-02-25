@@ -30,10 +30,10 @@ async def create_run(
 
     # Idempotency: return existing run if key matches
     if idempotency_key:
-        result = await db.execute(select(ProjectRun).where(ProjectRun.idempotency_key == idempotency_key))
-        existing = result.scalar_one_or_none()
-        if existing:
-            return existing
+        run_result = await db.execute(select(ProjectRun).where(ProjectRun.idempotency_key == idempotency_key))
+        existing_run = run_result.scalar_one_or_none()
+        if existing_run is not None:
+            return existing_run
 
     start_node = "IngestPrompt"
     if body and body.resume_from_node:

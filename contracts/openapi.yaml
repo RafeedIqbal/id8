@@ -287,6 +287,9 @@ components:
         id:
           type: string
           format: uuid
+        owner_user_id:
+          type: string
+          format: uuid
         initial_prompt:
           type: string
         status:
@@ -295,10 +298,19 @@ components:
           type: string
         live_deployment_url:
           type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
       required:
         - id
+        - owner_user_id
         - initial_prompt
         - status
+        - created_at
+        - updated_at
     ProjectRun:
       type: object
       properties:
@@ -312,11 +324,25 @@ components:
           $ref: '#/components/schemas/ProjectStatus'
         current_node:
           type: string
+        idempotency_key:
+          type: string
+        last_error_code:
+          type: string
+        last_error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
       required:
         - id
         - project_id
         - status
         - current_node
+        - created_at
+        - updated_at
     ProjectArtifact:
       type: object
       properties:
@@ -326,6 +352,9 @@ components:
         project_id:
           type: string
           format: uuid
+        run_id:
+          type: string
+          format: uuid
         artifact_type:
           $ref: '#/components/schemas/ArtifactType'
         version:
@@ -333,11 +362,19 @@ components:
         content:
           type: object
           additionalProperties: true
+        model_profile:
+          $ref: '#/components/schemas/ModelProfile'
+        created_at:
+          type: string
+          format: date-time
       required:
         - id
         - project_id
+        - run_id
         - artifact_type
         - version
+        - content
+        - created_at
     ArtifactResponse:
       type: object
       properties:
@@ -354,17 +391,29 @@ components:
         project_id:
           type: string
           format: uuid
+        run_id:
+          type: string
+          format: uuid
         stage:
           $ref: '#/components/schemas/ApprovalStage'
         decision:
           type: string
         notes:
           type: string
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
       required:
         - id
         - project_id
+        - run_id
         - stage
         - decision
+        - created_by
+        - created_at
     DeploymentRecord:
       type: object
       properties:
@@ -380,8 +429,12 @@ components:
           type: string
         url:
           type: string
+        created_at:
+          type: string
+          format: date-time
       required:
         - id
         - project_id
         - environment
         - status
+        - created_at

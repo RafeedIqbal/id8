@@ -18,9 +18,11 @@ class ApprovalRequest(BaseModel):
 class ApprovalEventResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    run_id: uuid.UUID
     stage: ApprovalStage
     decision: str
     notes: str | None = None
+    created_by: uuid.UUID
     created_at: datetime
 
     model_config = {"from_attributes": True}

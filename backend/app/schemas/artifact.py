@@ -9,9 +9,10 @@ from pydantic import BaseModel
 from app.models.enums import ArtifactType, ModelProfile
 
 
-class ArtifactResponse(BaseModel):
+class ProjectArtifactResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    run_id: uuid.UUID
     artifact_type: ArtifactType
     version: int
     content: dict[str, Any]
@@ -21,5 +22,9 @@ class ArtifactResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ArtifactResponse(BaseModel):
+    artifact: ProjectArtifactResponse
+
+
 class ArtifactListResponse(BaseModel):
-    items: list[ArtifactResponse]
+    items: list[ProjectArtifactResponse]

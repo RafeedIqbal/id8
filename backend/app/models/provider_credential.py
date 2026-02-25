@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint, text
+from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,11 +19,11 @@ class ProviderCredential(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    provider: Mapped[str] = mapped_column(String, nullable=False)
-    encrypted_secret: Mapped[str] = mapped_column(String, nullable=False)
-    secret_scope: Mapped[str] = mapped_column(String, nullable=False)
-    last_rotated_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
-    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    last_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (UniqueConstraint("user_id", "provider", "secret_scope"),)

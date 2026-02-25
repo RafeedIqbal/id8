@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
@@ -21,7 +22,7 @@ async def deploy_project(
     body: DeployRequest | None = None,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     # Verify project
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
