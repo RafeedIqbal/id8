@@ -18,8 +18,8 @@ class TokenPricing:
 # MVP pricing table used for estimated-cost telemetry.
 # Values can be adjusted as providers change pricing.
 _MODEL_PRICING: dict[str, TokenPricing] = {
-    "gemini-3.1-pro-preview": TokenPricing(prompt_per_million=3.50, completion_per_million=10.50),
-    "gemini-3.1-pro-preview-customtools": TokenPricing(prompt_per_million=3.50, completion_per_million=10.50),
+    "gemini-3.1-pro-preview": TokenPricing(prompt_per_million=2.00, completion_per_million=12.00),
+    "gemini-3.1-pro-preview-customtools": TokenPricing(prompt_per_million=2.00, completion_per_million=12.00),
     "gemini-2.5-pro": TokenPricing(prompt_per_million=2.50, completion_per_million=7.50),
 }
 

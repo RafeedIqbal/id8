@@ -13,8 +13,8 @@ from app.models.enums import ModelProfile
 # ---------------------------------------------------------------------------
 
 MODEL_MAP: dict[ModelProfile, str] = {
-    ModelProfile.PRIMARY: "gemini-2.5-pro",
-    ModelProfile.CUSTOMTOOLS: "gemini-2.5-pro",
+    ModelProfile.PRIMARY: "gemini-3.1-pro-preview",
+    ModelProfile.CUSTOMTOOLS: "gemini-3.1-pro-preview-customtools",
     ModelProfile.FALLBACK: "gemini-2.5-pro",
 }
 

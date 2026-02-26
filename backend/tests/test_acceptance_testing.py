@@ -524,8 +524,8 @@ async def test_scenario_3_stitch_outage_fallback(
 @pytest.mark.asyncio
 async def test_scenario_4_model_routing() -> None:
     """Scenario 4: profile routing and fallback model only on retry conditions."""
-    assert resolve_model(resolve_profile("GeneratePRD")) == "gemini-2.5-pro"
-    assert resolve_model(resolve_profile("WriteCode")) == "gemini-2.5-pro"
+    assert resolve_model(resolve_profile("GeneratePRD")) == "gemini-3.1-pro-preview"
+    assert resolve_model(resolve_profile("WriteCode")) == "gemini-3.1-pro-preview-customtools"
 
     retry_models: list[str] = []
 
@@ -544,7 +544,7 @@ async def test_scenario_4_model_routing() -> None:
             prompt="Generate a PRD",
         )
 
-    assert retry_models[0:2] == ["gemini-2.5-pro", "gemini-2.5-pro"]
+    assert retry_models[0:2] == ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"]
     assert retry_models[2] == "gemini-2.5-pro"
     assert retry_result.profile_used == ModelProfile.FALLBACK
 
@@ -563,7 +563,7 @@ async def test_scenario_4_model_routing() -> None:
             prompt="Generate another PRD",
         )
 
-    assert primary_models == ["gemini-2.5-pro"]
+    assert primary_models == ["gemini-3.1-pro-preview"]
     assert primary_result.profile_used == ModelProfile.PRIMARY
 
 

@@ -25,8 +25,8 @@ from app.orchestrator.retry import RateLimitError, RetryableError
 
 class TestResolveModel:
     def test_all_profiles(self) -> None:
-        assert resolve_model(ModelProfile.PRIMARY) == "gemini-2.5-pro"
-        assert resolve_model(ModelProfile.CUSTOMTOOLS) == "gemini-2.5-pro"
+        assert resolve_model(ModelProfile.PRIMARY) == "gemini-3.1-pro-preview"
+        assert resolve_model(ModelProfile.CUSTOMTOOLS) == "gemini-3.1-pro-preview-customtools"
         assert resolve_model(ModelProfile.FALLBACK) == "gemini-2.5-pro"
 
     def test_unknown_profile_raises(self) -> None:
@@ -246,8 +246,8 @@ class TestGenerateWithFallback:
         assert result.content == "Recovered with reduced prompt"
         assert result.profile_used == ModelProfile.FALLBACK
         assert len(call_args) == 4
-        assert call_args[0]["model"] == "gemini-2.5-pro"
-        assert call_args[1]["model"] == "gemini-2.5-pro"
+        assert call_args[0]["model"] == "gemini-3.1-pro-preview-customtools"
+        assert call_args[1]["model"] == "gemini-3.1-pro-preview-customtools"
         assert call_args[2]["model"] == "gemini-2.5-pro"
         assert call_args[3]["model"] == "gemini-2.5-pro"
         assert isinstance(call_args[3]["contents"], str)

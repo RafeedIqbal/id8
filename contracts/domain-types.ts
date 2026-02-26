@@ -131,13 +131,13 @@ export interface ApprovalRequest {
 }
 
 export interface LlmRoutingPolicy {
-  planningReasoning: "gemini-2.5-pro";
-  toolHeavyOrchestration: "gemini-2.5-pro";
+  planningReasoning: "gemini-3.1-pro-preview";
+  toolHeavyOrchestration: "gemini-3.1-pro-preview-customtools";
   fallback: "gemini-2.5-pro";
 }
 
 export const DEFAULT_LLM_ROUTING_POLICY: LlmRoutingPolicy = {
-  planningReasoning: "gemini-2.5-pro",
-  toolHeavyOrchestration: "gemini-2.5-pro",
+  planningReasoning: "gemini-3.1-pro-preview",
+  toolHeavyOrchestration: "gemini-3.1-pro-preview-customtools",
   fallback: "gemini-2.5-pro",
 };
