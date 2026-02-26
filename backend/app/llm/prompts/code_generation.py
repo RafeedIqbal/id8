@@ -20,9 +20,7 @@ Rules:
 5. If `vercel.json` is present, all function patterns must be under `api/`.
 6. Prefer Next.js route handlers / server actions over external backend runtimes.
 7. Dependency policy (MUST):
-   - Use Context7 to build a minimal allowlist of libraries needed for the requested features.
-   - Only use libraries from that allowlist plus Next.js/React/Node built-ins.
-   - Avoid deprecated, unmaintained, or known-vulnerable packages.
+   - Check for deprecated, unmaintained, or known-vulnerable packages.
 8. Build reliability (MUST):
    - Every imported package, CLI, loader, or config plugin must be declared in `package.json`.
    - Prevent module-not-found failures from config-driven plugins (for example `autoprefixer`) by
@@ -67,7 +65,6 @@ Rules:
    - Next.js runtime entry files (`app/page.tsx` or `src/app/page.tsx`).
    - Optional `vercel.json` uses only `api/...` function patterns.
 9. Dependency policy (MUST):
-   - Use Context7 to maintain a minimal allowlist of approved libraries for this project.
    - Only introduce libraries required by files in this chunk.
    - Avoid deprecated, unmaintained, or known-vulnerable packages.
 10. Build reliability (MUST):
