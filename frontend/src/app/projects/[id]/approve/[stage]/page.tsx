@@ -41,6 +41,7 @@ function extractDesignScreens(artifact?: ProjectArtifact): DesignScreen[] {
   if (!Array.isArray(rawScreens)) return [];
 
   const screens: DesignScreen[] = [];
+  const seenScreenIds = new Set<string>();
   for (const screen of rawScreens) {
     if (!screen || typeof screen !== "object") continue;
     const record = screen as Record<string, unknown>;
@@ -49,15 +50,20 @@ function extractDesignScreens(artifact?: ProjectArtifact): DesignScreen[] {
     const rawComponents = Array.isArray(record.components) ? record.components : [];
 
     const components: Array<{ id: string; name: string }> = [];
+    const seenComponentIds = new Set<string>();
     for (const comp of rawComponents) {
       if (!comp || typeof comp !== "object") continue;
       const compRecord = comp as Record<string, unknown>;
       const compId = typeof compRecord.id === "string" ? compRecord.id : "";
       const compName = typeof compRecord.name === "string" ? compRecord.name : compId || "Component";
-      if (compId) components.push({ id: compId, name: compName });
+      if (compId && !seenComponentIds.has(compId)) {
+        seenComponentIds.add(compId);
+        components.push({ id: compId, name: compName });
+      }
     }
 
-    if (screenId) {
+    if (screenId && !seenScreenIds.has(screenId)) {
+      seenScreenIds.add(screenId);
       screens.push({
         id: screenId,
         name: screenName,

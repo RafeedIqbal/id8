@@ -77,10 +77,21 @@ function toScreen(raw: unknown): Screen | null {
   };
 }
 
+function dedupeScreens(screens: Screen[]): Screen[] {
+  const seen = new Set<string>();
+  return screens.filter((screen) => {
+    const id = screen.id?.trim();
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
   const c = safeRecord(artifact.content);
   const rawScreens = c ? safeArray(c.screens ?? c.screen_list) : [];
-  const screens = rawScreens.map(toScreen).filter((s): s is Screen => s !== null);
+  const screens = dedupeScreens(rawScreens.map(toScreen).filter((s): s is Screen => s !== null));
   const designMeta = c ? (safeRecord(c.__design_metadata) ?? safeRecord(c.metadata) ?? safeRecord(c.provider_metadata) ?? {}) : {};
   const provider = c ? (safeString(designMeta.provider_used) ?? safeString(designMeta.provider) ?? safeString(c.provider)) : undefined;
   const providerMeta = designMeta;

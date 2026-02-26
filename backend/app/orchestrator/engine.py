@@ -534,7 +534,12 @@ async def _lock_run_for_processing(
 async def _check_existing_artifact(
     run_id: uuid.UUID, node_name: str, db: AsyncSession
 ) -> ProjectArtifact | None:
-    """Return an existing artifact for (run_id, node_name) if one exists."""
+    """Return an existing *successful* checkpoint artifact for (run_id, node_name).
+
+    For DeployProduction we only treat an artifact as reusable when it
+    represents a successful deployment. Failed deploy artifacts must not skip
+    the node because operators need to retry real deployment work.
+    """
     a_type = artifact_type_for_node(node_name)
     if a_type is None:
         return None
@@ -548,7 +553,43 @@ async def _check_existing_artifact(
         )
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    artifact = result.scalar_one_or_none()
+    if artifact is None:
+        return None
+
+    if not _is_reusable_checkpoint_artifact(node_name, artifact.content):
+        logger.info(
+            "Ignoring non-reusable checkpoint for run=%s node=%s artifact=%s",
+            run_id,
+            node_name,
+            artifact.id,
+        )
+        return None
+
+    return artifact
+
+
+def _is_reusable_checkpoint_artifact(node_name: str, content: Any) -> bool:
+    """Whether *content* is safe to use as an idempotent checkpoint.
+
+    Most nodes treat any matching artifact as reusable. DeployProduction is
+    stricter: only successful deploy reports (no error + live_url present)
+    can skip re-execution.
+    """
+    if node_name != str(NodeName.DEPLOY_PRODUCTION):
+        return True
+
+    if not isinstance(content, dict):
+        return False
+
+    if content.get("error"):
+        return False
+
+    live_url = content.get("live_url")
+    if not isinstance(live_url, str) or not live_url.strip():
+        return False
+
+    return True
 
 
 async def _persist_artifact(

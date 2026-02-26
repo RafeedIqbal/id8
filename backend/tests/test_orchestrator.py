@@ -431,6 +431,91 @@ class TestIdempotency:
         artifacts = result.scalars().all()
         assert len(artifacts) == 1
 
+    @pytest.mark.asyncio
+    async def test_failed_deploy_checkpoint_does_not_skip_deploy(
+        self, db: AsyncSession, seed_run: ProjectRun
+    ) -> None:
+        seed_run.current_node = "DeployProduction"
+        seed_run.status = ProjectStatus.DEPLOYING
+        db.add(
+            ProjectArtifact(
+                project_id=seed_run.project_id,
+                run_id=seed_run.id,
+                artifact_type="deploy_report",
+                version=1,
+                content={
+                    "__node_name": "DeployProduction",
+                    "live_url": None,
+                    "environment": "production",
+                    "error": "previous deploy failed",
+                },
+                model_profile=None,
+            )
+        )
+        await db.flush()
+
+        original_deploy = HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION]
+        HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = _DeploySuccessHandler()
+        try:
+            await run_orchestrator(seed_run.id, db)
+            await db.refresh(seed_run)
+            assert seed_run.current_node == "EndSuccess"
+
+            artifact_result = await db.execute(
+                select(ProjectArtifact)
+                .where(
+                    ProjectArtifact.run_id == seed_run.id,
+                    ProjectArtifact.artifact_type == "deploy_report",
+                )
+                .order_by(ProjectArtifact.version.asc())
+            )
+            deploy_artifacts = artifact_result.scalars().all()
+            assert len(deploy_artifacts) == 2
+            assert deploy_artifacts[-1].content["live_url"] == "https://example.test"
+            assert "error" not in deploy_artifacts[-1].content
+        finally:
+            HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = original_deploy
+
+    @pytest.mark.asyncio
+    async def test_successful_deploy_checkpoint_still_skips(
+        self, db: AsyncSession, seed_run: ProjectRun
+    ) -> None:
+        seed_run.current_node = "DeployProduction"
+        seed_run.status = ProjectStatus.DEPLOYING
+        db.add(
+            ProjectArtifact(
+                project_id=seed_run.project_id,
+                run_id=seed_run.id,
+                artifact_type="deploy_report",
+                version=1,
+                content={
+                    "__node_name": "DeployProduction",
+                    "live_url": "https://example.test",
+                    "environment": "production",
+                },
+                model_profile=None,
+            )
+        )
+        await db.flush()
+
+        original_deploy = HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION]
+        HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = _ExplodingDeployHandler()
+        try:
+            await run_orchestrator(seed_run.id, db)
+            await db.refresh(seed_run)
+            assert seed_run.current_node == "EndSuccess"
+
+            artifact_result = await db.execute(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.run_id == seed_run.id,
+                    ProjectArtifact.artifact_type == "deploy_report",
+                )
+            )
+            deploy_artifacts = artifact_result.scalars().all()
+            assert len(deploy_artifacts) == 1
+        finally:
+            HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = original_deploy
+
 
 # ---------------------------------------------------------------------------
 # 7. Retry logic
@@ -483,6 +568,13 @@ class _DeploySuccessHandler(NodeHandler):
             outcome="passed",
             artifact_data={"live_url": "https://example.test", "environment": "production"},
         )
+
+
+class _ExplodingDeployHandler(NodeHandler):
+    """Raises immediately if DeployProduction executes unexpectedly."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        raise AssertionError("DeployProduction handler should not run for reusable checkpoints")
 
 
 class _WriteCodeSuccessHandler(NodeHandler):
