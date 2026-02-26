@@ -119,7 +119,7 @@ async def list_projects(
             func.row_number()
             .over(
                 partition_by=ProjectRun.project_id,
-                order_by=ProjectRun.created_at.desc(),
+                order_by=(ProjectRun.created_at.desc(), ProjectRun.id.desc()),
             )
             .label("rn"),
         )

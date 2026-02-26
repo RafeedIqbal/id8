@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,7 +27,7 @@ from app.models.project_run import ProjectRun
 from app.models.retry_job import RetryJob
 from app.models.user import User
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
-from app.orchestrator.engine import run_orchestrator
+from app.orchestrator.engine import _update_project_status, run_orchestrator
 from app.orchestrator.handlers.registry import HANDLER_REGISTRY
 from app.orchestrator.nodes import NODE_TO_PROJECT_STATUS, NodeName
 from app.orchestrator.retry import RateLimitError, RetryableError
@@ -786,3 +786,51 @@ class TestProjectStatusSync:
 
         expected = NODE_TO_PROJECT_STATUS[NodeName(seed_run.current_node)]
         assert seed_project.status == expected
+
+    @pytest.mark.asyncio
+    async def test_stale_run_does_not_overwrite_latest_project_status(
+        self, db: AsyncSession, seed_project: Project
+    ) -> None:
+        now = datetime.now(tz=UTC)
+        older_run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.FAILED,
+            current_node="EndFailed",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(older_run)
+        await db.flush()
+
+        newer_run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.DEPLOYING,
+            current_node="DeployProduction",
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+        db.add(newer_run)
+        await db.flush()
+
+        seed_project.status = ProjectStatus.DEPLOYING
+        await db.flush()
+
+        await _update_project_status(
+            seed_project.id,
+            NodeName.END_FAILED,
+            db,
+            run_id=older_run.id,
+        )
+        await db.flush()
+        await db.refresh(seed_project)
+        assert seed_project.status == ProjectStatus.DEPLOYING
+
+        await _update_project_status(
+            seed_project.id,
+            NodeName.END_FAILED,
+            db,
+            run_id=newer_run.id,
+        )
+        await db.flush()
+        await db.refresh(seed_project)
+        assert seed_project.status == ProjectStatus.FAILED

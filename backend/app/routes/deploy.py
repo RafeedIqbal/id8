@@ -120,7 +120,7 @@ async def deploy_project(
     run_result = await db.execute(
         select(ProjectRun)
         .where(ProjectRun.project_id == project_id)
-        .order_by(ProjectRun.created_at.desc())
+        .order_by(ProjectRun.created_at.desc(), ProjectRun.id.desc())
         .limit(1)
     )
     run = run_result.scalar_one_or_none()

@@ -88,7 +88,7 @@ async def _latest_run_for_project(project_id: uuid.UUID, db: AsyncSession) -> Pr
     result = await db.execute(
         select(ProjectRun)
         .where(ProjectRun.project_id == project_id)
-        .order_by(ProjectRun.created_at.desc())
+        .order_by(ProjectRun.created_at.desc(), ProjectRun.id.desc())
         .limit(1)
     )
     return result.scalar_one_or_none()

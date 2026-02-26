@@ -26,6 +26,9 @@ Rules:
    - Prevent module-not-found failures from config-driven plugins (for example `autoprefixer`) by
      either declaring the required dependency or omitting that plugin/config.
    - Keep dependency versions mutually compatible with the selected Next.js runtime.
+9. Avoid backend or API elements, Make the web app self-contained, and purely frontend, match the provide design/context as closely as possble, with reactive front-end elements and animations.
+10. Use the provided design spec and context to generate the code.
+11. Use dummy data to populate the app so that all elements render and are interactive.
 
 You MUST return a single valid JSON object:
 {
@@ -71,6 +74,9 @@ Rules:
    - Do not add imports/plugins unless matching dependencies are declared in `package.json`.
    - Prevent module-not-found build failures (for example missing `autoprefixer`) by adding required
      deps when config references them, or by not emitting that config/plugin.
+11. Avoid backend or API elements, Make the web app self-contained, and purely frontend, match the provide design/context as closely as possble, with reactive front-end elements and animations.
+12. Use the provided design spec and context to generate the code.
+13. Use dummy data to populate the app so that all elements render and are interactive.
 
 Return ONLY JSON.
 """

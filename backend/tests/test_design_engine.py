@@ -34,6 +34,7 @@ from app.design.stitch_mcp import (
     STITCH_TOOLS,
     StitchMcpProvider,
     _find_project_id_by_title,
+    _parse_stitch_response,
     _project_name_from_prd,
 )
 from app.llm.client import LlmResponse, TokenUsage
@@ -389,6 +390,40 @@ class TestInternalSpecProvider:
 # ---------------------------------------------------------------------------
 # 3. Stitch MCP provider tests
 # ---------------------------------------------------------------------------
+
+
+class TestStitchResponseParsing:
+    def test_nested_asset_resource_names_do_not_create_extra_screens(self) -> None:
+        raw = {
+            "screens": [
+                {
+                    "name": "projects/p1/screens/screen-a",
+                    "title": "Screen A",
+                    "screenshot": {"downloadUrl": "https://stitch.example.com/screen-a.png"},
+                },
+                {
+                    "name": "projects/p1/screens/screen-b",
+                    "title": "Screen B",
+                    "screenshot": {"downloadUrl": "https://stitch.example.com/screen-b.png"},
+                },
+            ],
+            "content": [
+                {
+                    "name": "projects/p1/screens/screen-a/assets/asset-1",
+                    "downloadUrl": "https://stitch.example.com/screen-a.png",
+                },
+                {
+                    "name": "projects/p1/screens/screen-b/assets/asset-2",
+                    "downloadUrl": "https://stitch.example.com/screen-b.png",
+                },
+            ],
+        }
+
+        output = _parse_stitch_response(raw)
+
+        assert [screen.id for screen in output.screens] == ["screen-a", "screen-b"]
+        assert output.screens[0].assets == ["https://stitch.example.com/screen-a.png"]
+        assert output.screens[1].assets == ["https://stitch.example.com/screen-b.png"]
 
 
 class TestStitchMcpProvider:

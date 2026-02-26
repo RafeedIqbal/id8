@@ -35,6 +35,7 @@ from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 logger = logging.getLogger("id8.orchestrator.handlers.deploy_production")
 
 _HEALTH_CHECK_TIMEOUT = 30.0
+_HEALTH_CHECK_ACCEPTED_PROTECTED_STATUSES = {401, 403}
 
 
 class DeployProductionHandler(NodeHandler):
@@ -308,6 +309,8 @@ async def _health_check(url: str, *, timeout: float = _HEALTH_CHECK_TIMEOUT) -> 
             resp = await http.get(url, follow_redirects=True)
         if 200 <= resp.status_code < 400:
             return True, f"HTTP {resp.status_code}"
+        if resp.status_code in _HEALTH_CHECK_ACCEPTED_PROTECTED_STATUSES:
+            return True, f"HTTP {resp.status_code} (reachable, auth-protected)"
         return False, f"HTTP {resp.status_code}"
     except Exception as exc:
         return False, str(exc)

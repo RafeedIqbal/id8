@@ -468,6 +468,21 @@ async def test_health_check_returns_true_for_200() -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_check_returns_true_for_401_auth_protected() -> None:
+    import httpx
+
+    with patch.object(httpx, "AsyncClient") as mock_cls:
+        instance = MagicMock()
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        instance.get = AsyncMock(return_value=httpx.Response(401))
+        mock_cls.return_value = instance
+        ok, detail = await _health_check("https://example.com")
+    assert ok is True
+    assert "401" in detail
+
+
+@pytest.mark.asyncio
 async def test_health_check_returns_false_for_500() -> None:
     import httpx
 

@@ -640,10 +640,27 @@ def _normalize_screen_id(raw: str) -> str:
     if not value:
         return ""
     if "/screens/" in value:
-        return value.rsplit("/screens/", 1)[1].strip()
-    if value.startswith("screens/"):
-        return value.split("/", 1)[1].strip()
+        value = value.rsplit("/screens/", 1)[1].strip()
+    elif value.startswith("screens/"):
+        value = value.split("/", 1)[1].strip()
+    value = value.split("?", 1)[0].split("#", 1)[0].strip("/")
+    if "/" in value:
+        value = value.split("/", 1)[0].strip()
     return value
+
+
+def _is_screen_resource_name(raw: str) -> bool:
+    value = raw.strip()
+    if not value:
+        return False
+    if "/screens/" in value:
+        value = value.rsplit("/screens/", 1)[1].strip()
+    elif value.startswith("screens/"):
+        value = value.split("/", 1)[1].strip()
+    else:
+        return False
+    value = value.split("?", 1)[0].split("#", 1)[0].strip("/")
+    return bool(value) and "/" not in value
 
 
 def _project_url(project_id: str) -> str:
@@ -828,11 +845,18 @@ def _extract_projects(raw: dict[str, Any]) -> list[dict[str, Any]]:
 def _extract_screens(raw: dict[str, Any]) -> list[Screen]:
     raw_screens = _extract_raw_screen_objects(raw)
     screens: list[Screen] = []
+    seen_ids: set[str] = set()
 
     for i, raw_screen in enumerate(raw_screens):
         screen = _screen_from_raw(raw_screen, i)
-        if screen is not None:
-            screens.append(screen)
+        if screen is None:
+            continue
+
+        normalized = _normalize_screen_id(screen.id) or screen.id
+        if normalized in seen_ids:
+            continue
+        seen_ids.add(normalized)
+        screens.append(screen)
 
     return screens
 
@@ -891,7 +915,7 @@ def _extract_raw_screen_objects(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _looks_like_screen(candidate: dict[str, Any]) -> bool:
     name = candidate.get("name")
-    if isinstance(name, str) and "/screens/" in name:
+    if isinstance(name, str) and _is_screen_resource_name(name):
         return True
 
     if any(key in candidate for key in ("screenshot", "htmlCode", "figmaExport", "screenMetadata")):

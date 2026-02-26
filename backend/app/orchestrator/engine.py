@@ -202,7 +202,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
                 db,
             )
             logger.info("Run %s parked at wait node %s", run_id, node_name)
-            await _update_project_status(run.project_id, node_name, db)
+            await _update_project_status(run.project_id, node_name, db, run_id=run.id)
             return
 
         if node_result.context_updates:
@@ -301,7 +301,7 @@ async def _advance(
     run.updated_at = datetime.now(tz=UTC)
     run.last_error_code = None
     run.last_error_message = None
-    await _update_project_status(run.project_id, next_node, db)
+    await _update_project_status(run.project_id, next_node, db, run_id=run.id)
     await _record_run_event(
         db=db,
         project_id=run.project_id,
@@ -323,7 +323,7 @@ async def _handle_terminal(run: ProjectRun, node_name: str, db: AsyncSession) ->
     terminal_status = NODE_TO_PROJECT_STATUS.get(NodeName(node_name), ProjectStatus.FAILED)
     run.status = terminal_status
     run.updated_at = finished_at
-    await _update_project_status(run.project_id, node_name, db)
+    await _update_project_status(run.project_id, node_name, db, run_id=run.id)
 
     total_duration_ms = round((finished_at - run.created_at).total_seconds() * 1000, 2)
     if node_name == NodeName.END_SUCCESS:
@@ -390,7 +390,7 @@ async def _transition_to_failed(run: ProjectRun, error_message: str, db: AsyncSe
     run.last_error_message = error_message
     now = datetime.now(tz=UTC)
     run.updated_at = now
-    await _update_project_status(run.project_id, NodeName.END_FAILED, db)
+    await _update_project_status(run.project_id, NodeName.END_FAILED, db, run_id=run.id)
     await _record_run_event(
         db=db,
         project_id=run.project_id,
@@ -496,7 +496,11 @@ async def _handle_retryable_error(
 
 
 async def _update_project_status(
-    project_id: uuid.UUID, node_name: str, db: AsyncSession
+    project_id: uuid.UUID,
+    node_name: str,
+    db: AsyncSession,
+    *,
+    run_id: uuid.UUID | None = None,
 ) -> None:
     """Set ``projects.status`` to match the current node."""
     try:
@@ -504,6 +508,25 @@ async def _update_project_status(
     except (ValueError, KeyError):
         logger.warning("No ProjectStatus mapping for node=%s", node_name)
         return
+
+    # Protect against stale/background runs overwriting project status that
+    # already belongs to a newer run.
+    if run_id is not None:
+        latest_run_result = await db.execute(
+            select(ProjectRun.id)
+            .where(ProjectRun.project_id == project_id)
+            .order_by(ProjectRun.created_at.desc(), ProjectRun.id.desc())
+            .limit(1)
+        )
+        latest_run_id = latest_run_result.scalar_one_or_none()
+        if latest_run_id is not None and latest_run_id != run_id:
+            logger.debug(
+                "Skipping project status update from stale run=%s (latest run=%s) for project=%s",
+                run_id,
+                latest_run_id,
+                project_id,
+            )
+            return
 
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()

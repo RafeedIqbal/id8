@@ -99,10 +99,11 @@ export default function ProjectDetailPage({
   const { data: project, isLoading: loadingProject, error: projectError } = useProject(id, {
     refetchInterval: 5000,
   });
-  const isActive = project && ACTIVE_STATUSES.includes(project.status);
+  const shouldPollRun = Boolean(project && project.status !== "ideation");
   const { data: runDetail, isLoading: loadingRun } = useLatestRun(id, {
-    refetchInterval: isActive ? 5000 : undefined,
+    refetchInterval: shouldPollRun ? 5000 : undefined,
   });
+  const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const { data: artifactsData } = useArtifacts(id, {
     refetchInterval: isActive ? 5000 : undefined,
   });
@@ -123,17 +124,18 @@ export default function ProjectDetailPage({
   }
 
   // Determine if we're at a waiting node (approval gate)
+  const effectiveStatus: ProjectStatus = runDetail?.status ?? project?.status ?? "ideation";
   const currentNode = runDetail?.currentNode;
   const waitingStage = currentNode ? WAITING_STAGES[currentNode] : undefined;
   const failedNode = inferFailureNode(
     runDetail?.currentNode,
     runDetail?.timeline,
-    project?.status === "failed"
+    effectiveStatus === "failed"
   );
   const resumeNode = resolveResumeNode(
     runDetail?.currentNode,
     runDetail?.timeline,
-    project?.status === "failed"
+    effectiveStatus === "failed"
   );
   const resumeLabel = resumeNode ? (NODE_LABELS[resumeNode] ?? resumeNode) : "Failed Step";
   const resumeReplayMode: "retry_failed" | "replay_from_node" =
@@ -143,8 +145,8 @@ export default function ProjectDetailPage({
     runDetail?.lastErrorMessage?.toLowerCase().includes("credentials");
   const stitchAuthConfigured = Boolean(designTools.data?.stitchAuthConfigured);
 
-  const isTerminal = project?.status === "failed" || project?.status === "deployed";
-  const canDelete = project && DELETABLE_STATUSES.includes(project.status);
+  const isTerminal = effectiveStatus === "failed" || effectiveStatus === "deployed";
+  const canDelete = project && DELETABLE_STATUSES.includes(effectiveStatus);
 
   function handleReplay(node: string, mode: "retry_failed" | "replay_from_node") {
     createRun.mutate({ resumeFromNode: node, replayMode: mode });
@@ -176,7 +178,7 @@ export default function ProjectDetailPage({
             <h1 className="text-xl font-semibold text-text-0 truncate">
               {project.title}
             </h1>
-            <ProjectStatusBadge status={project.status} />
+            <ProjectStatusBadge status={effectiveStatus} />
           </div>
           <div className="flex items-center gap-4 text-xs text-text-3 font-mono-display">
             <span>Created {formatDateTime(project.createdAt)}</span>
@@ -251,7 +253,7 @@ export default function ProjectDetailPage({
               Run Controls
             </h2>
             <div className="flex flex-wrap gap-2">
-              {project.status === "ideation" && (
+              {effectiveStatus === "ideation" && (
                 <button
                   onClick={() => createRun.mutate({})}
                   disabled={createRun.isPending}
@@ -260,7 +262,7 @@ export default function ProjectDetailPage({
                   {createRun.isPending ? "Starting\u2026" : "Start Run"}
                 </button>
               )}
-              {project.status === "failed" && (
+              {effectiveStatus === "failed" && (
                 <button
                   onClick={() => createRun.mutate({ resumeFromNode: resumeNode, replayMode: resumeReplayMode })}
                   disabled={createRun.isPending}
@@ -281,12 +283,12 @@ export default function ProjectDetailPage({
                   Review &amp; Approve
                 </Link>
               )}
-              {!waitingStage && project.status !== "ideation" && project.status !== "failed" && project.status !== "deployed" && (
+              {!waitingStage && effectiveStatus !== "ideation" && effectiveStatus !== "failed" && effectiveStatus !== "deployed" && (
                 <div className="w-full text-center text-xs text-text-3 py-2 font-mono-display">
                   Pipeline running&hellip;
                 </div>
               )}
-              {project.status === "deployed" && (
+              {effectiveStatus === "deployed" && (
                 <div className="w-full text-center text-sm text-success py-2">
                   Deployment complete
                 </div>
@@ -342,7 +344,7 @@ export default function ProjectDetailPage({
             </div>
           )}
 
-          {project.status === "failed" && stitchAuthError && (
+          {effectiveStatus === "failed" && stitchAuthError && (
             <div className="glass p-5 space-y-3">
               <h2 className="text-xs font-mono-display text-warning tracking-widest uppercase">
                 Stitch Configuration
