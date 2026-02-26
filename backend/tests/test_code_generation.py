@@ -941,6 +941,115 @@ class TestCodeValidation:
         assert result.outcome == "success"
         assert result.error is None
 
+    @pytest.mark.asyncio
+    async def test_vercel_functions_pattern_outside_api_fails_validation(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        snapshot = {
+            "files": [
+                {
+                    "path": "backend/app/main.py",
+                    "content": "from fastapi import FastAPI\napp = FastAPI()\n",
+                    "language": "python",
+                },
+                {
+                    "path": "backend/requirements.txt",
+                    "content": "fastapi\n",
+                    "language": "text",
+                },
+                {
+                    "path": "vercel.json",
+                    "content": (
+                        "{\n"
+                        "  \"functions\": {\n"
+                        "    \"backend/app/main.py\": {\"maxDuration\": 30}\n"
+                        "  }\n"
+                        "}\n"
+                    ),
+                    "language": "json",
+                },
+                {
+                    "path": ".env.example",
+                    "content": "NEXT_PUBLIC_SUPABASE_URL=\nNEXT_PUBLIC_SUPABASE_ANON_KEY=\n",
+                    "language": "text",
+                },
+            ],
+            "build_command": "python -m compileall backend/app",
+            "test_command": "pytest",
+            "entry_point": "backend/app/main.py",
+        }
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(db, seed_run)
+
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response(json.dumps(snapshot)),
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "failure"
+        assert result.error is not None
+        assert "vercel" in result.error.lower()
+        assert "api/" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_vercel_functions_pattern_under_api_passes_validation(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        snapshot = {
+            "files": [
+                {
+                    "path": "backend/app/main.py",
+                    "content": "from fastapi import FastAPI\napp = FastAPI()\n",
+                    "language": "python",
+                },
+                {
+                    "path": "api/index.py",
+                    "content": "from backend.app.main import app\n",
+                    "language": "python",
+                },
+                {
+                    "path": "backend/requirements.txt",
+                    "content": "fastapi\n",
+                    "language": "text",
+                },
+                {
+                    "path": "vercel.json",
+                    "content": (
+                        "{\n"
+                        "  \"functions\": {\n"
+                        "    \"api/index.py\": {\"maxDuration\": 30}\n"
+                        "  }\n"
+                        "}\n"
+                    ),
+                    "language": "json",
+                },
+                {
+                    "path": ".env.example",
+                    "content": "NEXT_PUBLIC_SUPABASE_URL=\nNEXT_PUBLIC_SUPABASE_ANON_KEY=\n",
+                    "language": "text",
+                },
+            ],
+            "build_command": "python -m compileall backend/app",
+            "test_command": "pytest",
+            "entry_point": "backend/app/main.py",
+        }
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(db, seed_run)
+
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response(json.dumps(snapshot)),
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "success"
+        assert result.error is None
+
 
 # ---------------------------------------------------------------------------
 # 5. Prompt template tests
@@ -964,6 +1073,7 @@ class TestCodeGenerationPromptTemplates:
         assert "dashboard" in user.lower()
         assert "task management" in user.lower()
         assert "deploy-baseline artifacts" in system.lower()
+        assert "api/index.py" in system
 
     def test_prompt_with_security_feedback(self) -> None:
         from app.llm.prompts.code_generation import build_prompts

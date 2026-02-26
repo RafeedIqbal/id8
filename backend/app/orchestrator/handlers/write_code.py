@@ -692,6 +692,8 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
     if not any(_is_configuration_file(path) for path in file_paths):
         errors.append("No configuration file found (e.g. Dockerfile, .env.example, tsconfig)")
 
+    errors.extend(_validate_vercel_configs(files))
+
     python_modules = _build_python_module_index(file_paths)
     known_top_modules = {module.split(".", 1)[0] for module in python_modules if module}
 
@@ -722,6 +724,69 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
             errors.extend(_check_jsts_imports(path, content, file_paths))
 
     return errors
+
+
+def _validate_vercel_configs(files: list[dict[str, Any]]) -> list[str]:
+    """Validate generated vercel.json files for common invalid function patterns."""
+    errors: list[str] = []
+
+    for file_data in files:
+        path = str(file_data.get("path", "")).strip()
+        if not path.endswith("vercel.json"):
+            continue
+
+        content = file_data.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            errors.append(f"{path} is empty; remove it or provide valid JSON")
+            continue
+
+        try:
+            config = json.loads(content)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{path} is not valid JSON: {exc.msg}")
+            continue
+
+        if not isinstance(config, dict):
+            errors.append(f"{path} must contain a JSON object")
+            continue
+
+        functions = config.get("functions")
+        if functions is None:
+            continue
+
+        if not isinstance(functions, dict):
+            errors.append(f"{path} field 'functions' must be an object mapping glob patterns")
+            continue
+
+        for pattern in functions:
+            if not isinstance(pattern, str) or not pattern.strip():
+                errors.append(f"{path} has a non-string function pattern")
+                continue
+
+            normalized = _normalize_vercel_function_pattern(pattern)
+            if normalized.startswith("backend/"):
+                errors.append(
+                    f"{path} functions pattern '{pattern}' points to backend sources. "
+                    "Vercel Serverless Functions must be under api/ (for example 'api/index.py')."
+                )
+                continue
+
+            if normalized != "api" and not normalized.startswith("api/"):
+                errors.append(
+                    f"{path} functions pattern '{pattern}' is not under api/. "
+                    "Use api/*.py or api/**/*.py and route into backend code from that entry file."
+                )
+
+    return errors
+
+
+def _normalize_vercel_function_pattern(pattern: str) -> str:
+    """Normalize a vercel.json function glob for path prefix checks."""
+    normalized = pattern.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    return normalized
 
 
 def _infer_entry_point(file_paths: list[str]) -> str:

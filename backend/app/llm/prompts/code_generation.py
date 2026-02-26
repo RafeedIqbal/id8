@@ -16,6 +16,9 @@ Rules:
 5. Never include secrets. Use environment variables.
 6. Ensure deploy-baseline artifacts exist:
    - Vercel/frontend: package manifest plus runtime entry file.
+   - Vercel/Python functions: function files must live under `api/` (for example `api/index.py`).
+     Never configure `vercel.json.functions` to point to `backend/...`.
+     If backend app code is in `backend/app/main.py`, add an `api/index.py` wrapper that imports `app`.
    - Supabase: SQL migrations when schema requires DB changes.
    - Environment template: `.env.example` placeholders only.
 
@@ -50,6 +53,8 @@ Rules:
 7. Use stable paths under `frontend/`, `backend/`, `db/` or `supabase/`.
 8. Ensure deploy-baseline artifacts exist across phases:
    - Vercel/frontend: `package.json` (root or frontend) plus at least one frontend runtime entry file.
+   - Vercel/Python functions: place serverless entry files under `api/` only (for example `api/index.py`);
+     do not use `backend/...` in `vercel.json.functions` keys.
    - Supabase: SQL migrations in `supabase/migrations/` or `db/migrations/` when schema requires DB changes.
    - Environment template: `.env.example` with placeholders (never real secrets).
 
@@ -132,7 +137,9 @@ _CHUNK_REQUIREMENTS = {
     "config": (
         "Create configuration/manifests (requirements/package manifests, Docker, env examples, "
         "framework config files) needed to build and run. Include deploy-ready config for "
-        "Vercel and env placeholders for Supabase public keys when applicable."
+        "Vercel and env placeholders for Supabase public keys when applicable. "
+        "For Vercel Python runtimes, generate `api/index.py` (or `api/*.py`) entry files and ensure "
+        "`vercel.json.functions` keys target only `api/...` paths, never `backend/...`."
     ),
     "migrations": (
         "Create database migration files aligned with the defined schema. Prefer "
