@@ -1,6 +1,7 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, Component } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import { useArtifacts } from "@/lib/hooks";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { ARTIFACT_LABELS } from "@/lib/constants";
@@ -14,6 +15,7 @@ import { TechPlanViewer } from "@/components/artifact-viewers/tech-plan-viewer";
 import { CodeViewer } from "@/components/artifact-viewers/code-viewer";
 import { SecurityViewer } from "@/components/artifact-viewers/security-viewer";
 import { DeployViewer } from "@/components/artifact-viewers/deploy-viewer";
+import { RawJsonInspector } from "@/components/artifact-viewers/raw-json-inspector";
 
 const VIEWERS: Record<ArtifactType, React.ComponentType<{ artifact: ProjectArtifact }>> = {
   prd: PrdViewer,
@@ -23,6 +25,42 @@ const VIEWERS: Record<ArtifactType, React.ComponentType<{ artifact: ProjectArtif
   security_report: SecurityViewer,
   deploy_report: DeployViewer,
 };
+
+interface ViewerErrorBoundaryProps {
+  children: ReactNode;
+  artifact: ProjectArtifact;
+}
+
+interface ViewerErrorBoundaryState {
+  hasError: boolean;
+}
+
+class ViewerErrorBoundary extends Component<ViewerErrorBoundaryProps, ViewerErrorBoundaryState> {
+  constructor(props: ViewerErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): ViewerErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Artifact viewer error:", error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <RawJsonInspector
+          data={this.props.artifact.content}
+          warning="The artifact viewer encountered an error. Showing raw content as fallback."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function ArtifactViewerPage({
   params,
@@ -116,11 +154,11 @@ export default function ArtifactViewerPage({
           {/* Main viewer */}
           <div className={versions.length <= 1 ? "xl:col-span-2" : ""}>
             {Viewer ? (
-              <Viewer artifact={current} />
+              <ViewerErrorBoundary artifact={current}>
+                <Viewer artifact={current} />
+              </ViewerErrorBoundary>
             ) : (
-              <div className="glass p-6">
-                <pre className="text-xs">{JSON.stringify(current.content, null, 2)}</pre>
-              </div>
+              <RawJsonInspector data={current.content} warning={`No viewer available for type "${type}". Showing raw content.`} />
             )}
           </div>
         </div>

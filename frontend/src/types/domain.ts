@@ -34,6 +34,8 @@ export interface Project {
   status: ProjectStatus;
   githubRepoUrl?: string;
   liveDeploymentUrl?: string;
+  deletedAt?: string;
+  stackJson?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }

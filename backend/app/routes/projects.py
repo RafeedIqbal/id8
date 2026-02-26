@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,7 @@ from app.models.audit_event import AuditEvent
 from app.models.project import Project
 from app.models.project_run import ProjectRun
 from app.models.user import User
-from app.observability import summarize_distribution
+from app.observability import emit_audit_event, summarize_distribution
 from app.schemas.metrics import (
     DeploymentMetric,
     DistributionMetric,
@@ -27,7 +27,15 @@ from app.schemas.metrics import (
     StageSloMetric,
     TokenCostTotals,
 )
-from app.schemas.project import CreateProjectRequest, ProjectListItem, ProjectListResponse, ProjectResponse
+from app.schemas.project import (
+    CreateProjectRequest,
+    DeleteProjectResponse,
+    ProjectListItem,
+    ProjectListResponse,
+    ProjectResponse,
+    UpdateProjectRequest,
+)
+from app.schemas.stack import DEFAULT_STACK
 
 router = APIRouter(tags=["projects"])
 _SCAFFOLD_OWNER_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
@@ -40,6 +48,9 @@ _STAGE_TARGETS_MS: dict[str, tuple[float, float]] = {
     "design_generation": (90_000.0, 240_000.0),
     "end_to_end": (12.0 * 60.0 * 1000.0, 30.0 * 60.0 * 1000.0),
 }
+
+# Non-terminal run nodes (these block delete/restart)
+_TERMINAL_RUN_NODES = {"EndSuccess", "EndFailed"}
 
 
 async def _ensure_scaffold_owner(db: AsyncSession) -> uuid.UUID:
@@ -60,11 +71,15 @@ async def _ensure_scaffold_owner(db: AsyncSession) -> uuid.UUID:
 
 @router.post("/projects", operation_id="createProject", response_model=ProjectResponse, status_code=201)
 async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(get_db)) -> Project:
-    # TODO: resolve owner from auth context after auth integration.
     owner_user_id = await _ensure_scaffold_owner(db)
+
+    # Default stack_json if not provided
+    stack_data = (body.stack_json or DEFAULT_STACK).model_dump()
+
     project = Project(
         initial_prompt=body.initial_prompt,
         owner_user_id=owner_user_id,
+        stack_json=stack_data,
     )
     db.add(project)
     await db.commit()
@@ -73,10 +88,15 @@ async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(
 
 
 @router.get("/projects", operation_id="listProjects", response_model=ProjectListResponse)
-async def list_projects(db: AsyncSession = Depends(get_db)) -> dict[str, list[ProjectListItem]]:
-    project_result = await db.execute(
-        select(Project).order_by(Project.updated_at.desc(), Project.created_at.desc())
-    )
+async def list_projects(
+    include_deleted: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[ProjectListItem]]:
+    query = select(Project).order_by(Project.updated_at.desc(), Project.created_at.desc())
+    if not include_deleted:
+        query = query.where(Project.deleted_at.is_(None))
+
+    project_result = await db.execute(query)
     projects = list(project_result.scalars().all())
     if not projects:
         return {"items": []}
@@ -124,10 +144,168 @@ async def get_project(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> Project:
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.delete(
+    "/projects/{projectId}",
+    operation_id="deleteProject",
+    response_model=DeleteProjectResponse,
+)
+async def delete_project(
+    project_id: uuid.UUID = Path(alias="projectId"),
+    db: AsyncSession = Depends(get_db),
+) -> DeleteProjectResponse:
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Check for active (non-terminal) runs
+    active_run_result = await db.execute(
+        select(ProjectRun.id)
+        .where(
+            ProjectRun.project_id == project_id,
+            ProjectRun.current_node.not_in(_TERMINAL_RUN_NODES),
+        )
+        .limit(1)
+    )
+    if active_run_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete project while a run is in progress",
+        )
+
+    now = datetime.now(tz=UTC)
+    project.deleted_at = now
+    project.updated_at = now
+
+    await emit_audit_event(
+        project_id, None, "project.deleted", {"deleted_at": now.isoformat()}, db
+    )
+    await db.commit()
+    await db.refresh(project)
+
+    return DeleteProjectResponse(id=project.id, deleted_at=project.deleted_at)
+
+
+@router.patch(
+    "/projects/{projectId}",
+    operation_id="updateProject",
+    response_model=ProjectResponse,
+)
+async def update_project(
+    body: UpdateProjectRequest,
+    project_id: uuid.UUID = Path(alias="projectId"),
+    db: AsyncSession = Depends(get_db),
+) -> Project:
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    changes: dict[str, object] = {}
+    if body.initial_prompt is not None:
+        if not body.initial_prompt.strip():
+            raise HTTPException(status_code=422, detail="initial_prompt cannot be empty")
+        project.initial_prompt = body.initial_prompt.strip()
+        changes["initial_prompt"] = project.initial_prompt
+
+    if body.stack_json is not None:
+        project.stack_json = body.stack_json.model_dump()
+        changes["stack_json"] = project.stack_json
+
+    if not changes:
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    project.updated_at = datetime.now(tz=UTC)
+    await emit_audit_event(
+        project_id, None, "project.updated", changes, db
+    )
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+@router.post(
+    "/projects/{projectId}/restart",
+    operation_id="restartProject",
+    response_model=ProjectResponse,
+    status_code=202,
+)
+async def restart_project(
+    background_tasks: BackgroundTasks,
+    project_id: uuid.UUID = Path(alias="projectId"),
+    db: AsyncSession = Depends(get_db),
+) -> Project:
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Block if active run exists
+    active_run_result = await db.execute(
+        select(ProjectRun.id)
+        .where(
+            ProjectRun.project_id == project_id,
+            ProjectRun.current_node.not_in(_TERMINAL_RUN_NODES),
+        )
+        .limit(1)
+    )
+    if active_run_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot restart project while a run is in progress",
+        )
+
+    from app.orchestrator import NODE_TO_PROJECT_STATUS, NodeName
+
+    start_node = NodeName.INGEST_PROMPT
+    run = ProjectRun(
+        project_id=project_id,
+        status=NODE_TO_PROJECT_STATUS[start_node],
+        current_node=start_node,
+    )
+    db.add(run)
+    await db.flush()
+
+    project.status = NODE_TO_PROJECT_STATUS[start_node]
+    project.updated_at = datetime.now(tz=UTC)
+
+    await emit_audit_event(
+        project_id,
+        None,
+        "project.restarted",
+        {"run_id": str(run.id), "start_node": str(start_node)},
+        db,
+    )
+    await emit_audit_event(
+        project_id,
+        None,
+        "orchestrator.run_started",
+        {"run_id": str(run.id), "to_node": str(start_node), "outcome": "restarted"},
+        db,
+    )
+    await db.commit()
+    await db.refresh(project)
+    await db.refresh(run)
+
+    from app.routes.runs import _run_orchestrator_background
+
+    background_tasks.add_task(_run_orchestrator_background, run.id)
+
     return project
 
 

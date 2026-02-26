@@ -143,7 +143,9 @@ async def generate_design(
     idempotency_key: str | None = Depends(get_idempotency_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -197,7 +199,9 @@ async def submit_design_feedback(
     idempotency_key: str | None = Depends(get_idempotency_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

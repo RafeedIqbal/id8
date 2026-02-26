@@ -7,9 +7,10 @@ Drives the full GitHub integration for a run:
   3. Create feature branch ``id8/run-{run_id}`` (idempotent).
   4. Push all files from the latest ``code_snapshot`` artifact.
   5. Open a pull-request (idempotent — no duplicate PRs per run).
-  6. Poll CI check runs until all complete or the 10-minute timeout fires.
-  7. If all checks pass: squash-merge the PR.
-  8. If checks fail or time out: return ``"failure"`` with details.
+  6. For GitHub App auth: poll CI check runs until all complete or timeout.
+  7. For PAT auth: skip check-run polling and proceed to merge attempt.
+  8. If checks pass (or were skipped): squash-merge the PR.
+  9. If checks fail or time out: return ``"failure"`` with details.
 
 Branch protection is respected by design — code is never pushed directly to
 the default branch.
@@ -60,7 +61,7 @@ Approve and merge to proceed to the Deploy stage.
 
 
 class PreparePRHandler(NodeHandler):
-    """Create branch, push code, open PR, poll checks, and merge on pass."""
+    """Create branch, push code, open PR, optionally poll checks, and merge on pass."""
 
     async def execute(self, ctx: RunContext) -> NodeResult:
         # 1. Load code snapshot.
@@ -92,7 +93,12 @@ class PreparePRHandler(NodeHandler):
         client = GitHubClient(auth)
 
         try:
-            return await _run_github_flow(ctx, client, files)
+            return await _run_github_flow(
+                ctx,
+                client,
+                files,
+                skip_check_runs=(auth.mode == "token"),
+            )
         except GitHubRateLimitError as exc:
             raise RateLimitError(
                 f"GitHub rate limit: {exc}",
@@ -119,6 +125,8 @@ async def _run_github_flow(
     ctx: RunContext,
     client: GitHubClient,
     files: list[dict[str, str]],
+    *,
+    skip_check_runs: bool = False,
 ) -> NodeResult:
     # 3. Determine owner from auth / existing repo.
     project = await _load_project(ctx)
@@ -250,33 +258,42 @@ async def _run_github_flow(
         pr_info.html_url,
     )
 
-    # 9. Poll check runs.
-    try:
-        check_runs = await client.poll_checks(
+    # 9. Poll check runs (only when auth mode supports reliable check-runs access).
+    if skip_check_runs:
+        logger.info(
+            "Skipping check-run polling for %s/%s (commit=%s); proceeding to merge attempt",
             owner,
             repo_name,
             commit_sha,
-            timeout=_CHECK_POLL_TIMEOUT,
-        )
-    except GitHubChecksTimedOutError as exc:
-        metadata = {
-            "github_repo_url": project.github_repo_url,
-            "branch_name": branch_name,
-            "pr_url": pr_info.html_url,
-            "pr_number": pr_info.number,
-            "check_statuses": [],
-        }
-        await _persist_prepare_pr_metadata(ctx, metadata)
-        return NodeResult(outcome="failure", error=str(exc), context_updates=metadata)
-    except GitHubAuthError as exc:
-        logger.warning(
-            "Cannot read check runs for %s/%s (commit=%s): %s; continuing to merge attempt",
-            owner,
-            repo_name,
-            commit_sha,
-            exc,
         )
         check_runs = []
+    else:
+        try:
+            check_runs = await client.poll_checks(
+                owner,
+                repo_name,
+                commit_sha,
+                timeout=_CHECK_POLL_TIMEOUT,
+            )
+        except GitHubChecksTimedOutError as exc:
+            metadata = {
+                "github_repo_url": project.github_repo_url,
+                "branch_name": branch_name,
+                "pr_url": pr_info.html_url,
+                "pr_number": pr_info.number,
+                "check_statuses": [],
+            }
+            await _persist_prepare_pr_metadata(ctx, metadata)
+            return NodeResult(outcome="failure", error=str(exc), context_updates=metadata)
+        except GitHubAuthError as exc:
+            logger.warning(
+                "Cannot read check runs for %s/%s (commit=%s): %s; continuing to merge attempt",
+                owner,
+                repo_name,
+                commit_sha,
+                exc,
+            )
+            check_runs = []
 
     check_statuses = [
         {

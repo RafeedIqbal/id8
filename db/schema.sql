@@ -61,6 +61,8 @@ create table if not exists projects (
   status project_status_enum not null default 'ideation',
   github_repo_url text,
   live_deployment_url text,
+  deleted_at timestamptz default null,
+  stack_json jsonb default null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

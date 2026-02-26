@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -396,6 +398,15 @@ class TestCreateRun:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_deleted_project_not_found(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        seed_project.deleted_at = datetime.now(tz=UTC)
+        await db.flush()
+        resp = await client.post(f"/v1/projects/{seed_project.id}/runs")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
     async def test_idempotency_key_conflict_across_projects(
         self,
         client: AsyncClient,
@@ -438,7 +449,7 @@ class TestCreateRun:
 
         resp = await client.post(
             f"/v1/projects/{seed_project.id}/runs",
-            json={"resume_from_node": "DeployProduction"},
+            json={"resume_from_node": "DeployProduction", "replay_mode": "retry_failed"},
         )
         assert resp.status_code == 409
         assert "not reached" in resp.json()["error"]["message"].lower()
@@ -465,13 +476,28 @@ class TestCreateRun:
 
         resp = await client.post(
             f"/v1/projects/{seed_project.id}/runs",
-            json={"resume_from_node": "GeneratePRD"},
+            json={"resume_from_node": "GeneratePRD", "replay_mode": "retry_failed"},
         )
         assert resp.status_code == 202
         data = resp.json()
         assert data["id"] == str(seed_run.id)
         assert data["current_node"] == "GeneratePRD"
         assert data["last_error_code"] is None
+
+    @pytest.mark.asyncio
+    async def test_terminal_resume_requires_explicit_replay_mode(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_run.status = ProjectStatus.FAILED
+        seed_run.current_node = "EndFailed"
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "GeneratePRD"},
+        )
+        assert resp.status_code == 422
+        assert "replay_mode" in resp.json()["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_resume_allows_node_reached_via_audit_events(
@@ -495,7 +521,7 @@ class TestCreateRun:
 
         resp = await client.post(
             f"/v1/projects/{seed_project.id}/runs",
-            json={"resume_from_node": "WriteCode"},
+            json={"resume_from_node": "WriteCode", "replay_mode": "retry_failed"},
         )
         assert resp.status_code == 202
         data = resp.json()
@@ -724,6 +750,15 @@ class TestListArtifacts:
         resp = await client.get(f"/v1/projects/{fake_id}/artifacts")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_deleted_project_not_found(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        seed_project.deleted_at = datetime.now(tz=UTC)
+        await db.flush()
+        resp = await client.get(f"/v1/projects/{seed_project.id}/artifacts")
+        assert resp.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # POST /v1/projects/{projectId}/deploy — deployProject
@@ -811,6 +846,9 @@ class TestOpenAPIContract:
             ("/v1/projects", "get"): "listProjects",
             ("/v1/projects", "post"): "createProject",
             ("/v1/projects/{projectId}", "get"): "getProject",
+            ("/v1/projects/{projectId}", "patch"): "updateProject",
+            ("/v1/projects/{projectId}", "delete"): "deleteProject",
+            ("/v1/projects/{projectId}/restart", "post"): "restartProject",
             ("/v1/projects/{projectId}/runs", "post"): "createRun",
             ("/v1/projects/{projectId}/runs/latest", "get"): "getLatestRun",
             ("/v1/design/tools", "get"): "listDesignTools",
@@ -831,12 +869,16 @@ class TestOpenAPIContract:
 
         expected = {
             "CreateProjectRequest",
+            "UpdateProjectRequest",
             "CreateRunRequest",
+            "ReplayMode",
             "DesignGenerateRequest",
             "DesignFeedbackRequest",
             "ProjectListResponse",
+            "DeleteProjectResponse",
             "ApprovalRequest",
             "DeployRequest",
+            "StackJson",
             "Project",
             "ProjectRun",
             "ProjectRunDetail",
@@ -846,3 +888,309 @@ class TestOpenAPIContract:
             "DeploymentRecord",
         }
         assert expected.issubset(schemas)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/projects/{projectId} — deleteProject
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteProject:
+    @pytest.mark.asyncio
+    async def test_happy_path_delete(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.delete(f"/v1/projects/{seed_project.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == str(seed_project.id)
+        assert data["deleted_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_blocked_by_active_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        # Create a run in non-terminal status
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.CODEGEN,
+            current_node="WriteCode",
+        )
+        db.add(run)
+        await db.flush()
+        resp = await client.delete(f"/v1/projects/{seed_project.id}")
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_blocked_by_ingest_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.IDEATION,
+            current_node="IngestPrompt",
+        )
+        db.add(run)
+        await db.flush()
+        resp = await client.delete(f"/v1/projects/{seed_project.id}")
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_already_deleted_returns_404(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        # First delete
+        resp = await client.delete(f"/v1/projects/{seed_project.id}")
+        assert resp.status_code == 200
+        # Second delete
+        resp = await client.delete(f"/v1/projects/{seed_project.id}")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deleted_excluded_from_list(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        await client.delete(f"/v1/projects/{seed_project.id}")
+        resp = await client.get("/v1/projects")
+        assert resp.status_code == 200
+        ids = [item["id"] for item in resp.json()["items"]]
+        assert str(seed_project.id) not in ids
+
+    @pytest.mark.asyncio
+    async def test_deleted_included_with_flag(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        await client.delete(f"/v1/projects/{seed_project.id}")
+        resp = await client.get("/v1/projects?include_deleted=true")
+        assert resp.status_code == 200
+        ids = [item["id"] for item in resp.json()["items"]]
+        assert str(seed_project.id) in ids
+
+
+# ---------------------------------------------------------------------------
+# PATCH /v1/projects/{projectId} — updateProject
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateProject:
+    @pytest.mark.asyncio
+    async def test_partial_update_prompt(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.patch(
+            f"/v1/projects/{seed_project.id}",
+            json={"initial_prompt": "Updated prompt"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["initial_prompt"] == "Updated prompt"
+
+    @pytest.mark.asyncio
+    async def test_partial_update_stack(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.patch(
+            f"/v1/projects/{seed_project.id}",
+            json={
+                "stack_json": {
+                    "frontend_framework": "react",
+                    "backend_framework": "express",
+                    "database": "postgresql",
+                    "database_provider": "supabase",
+                    "hosting_frontend": "vercel",
+                    "hosting_backend": "vercel",
+                },
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["stack_json"]["frontend_framework"] == "react"
+
+    @pytest.mark.asyncio
+    async def test_empty_update_returns_422(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.patch(f"/v1/projects/{seed_project.id}", json={})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_empty_prompt_returns_422(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.patch(
+            f"/v1/projects/{seed_project.id}", json={"initial_prompt": "  "}
+        )
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/projects/{projectId}/restart — restartProject
+# ---------------------------------------------------------------------------
+
+
+class TestRestartProject:
+    @pytest.mark.asyncio
+    async def test_restart_happy_path(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        resp = await client.post(f"/v1/projects/{seed_project.id}/restart")
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] in ("ideation", "prd_draft")
+
+    @pytest.mark.asyncio
+    async def test_restart_blocked_by_active_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.CODEGEN,
+            current_node="WriteCode",
+        )
+        db.add(run)
+        await db.flush()
+        resp = await client.post(f"/v1/projects/{seed_project.id}/restart")
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_restart_blocked_by_ingest_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.IDEATION,
+            current_node="IngestPrompt",
+        )
+        db.add(run)
+        await db.flush()
+        resp = await client.post(f"/v1/projects/{seed_project.id}/restart")
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Replay from node tests
+# ---------------------------------------------------------------------------
+
+
+class TestReplayFromNode:
+    @pytest.mark.asyncio
+    async def test_replay_creates_new_run(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        # Create a completed run
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.DEPLOYED,
+            current_node="EndSuccess",
+        )
+        db.add(run)
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={
+                "resume_from_node": "GeneratePRD",
+                "replay_mode": "replay_from_node",
+            },
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        # Should be a new run (different ID)
+        assert data["id"] != str(run.id)
+        assert data["current_node"] == "GeneratePRD"
+
+    @pytest.mark.asyncio
+    async def test_replay_rejects_non_terminal(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.CODEGEN,
+            current_node="WriteCode",
+        )
+        db.add(run)
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={
+                "resume_from_node": "GeneratePRD",
+                "replay_mode": "replay_from_node",
+            },
+        )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_replay_copies_prior_artifacts_with_rebased_versions(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.DEPLOYED,
+            current_node="EndSuccess",
+        )
+        db.add(run)
+        await db.flush()
+
+        db.add(
+            ProjectArtifact(
+                project_id=seed_project.id,
+                run_id=run.id,
+                artifact_type=ArtifactType.PRD,
+                version=1,
+                content={"executive_summary": "v1"},
+                model_profile=ModelProfile.PRIMARY,
+            )
+        )
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={
+                "resume_from_node": "GenerateTechPlan",
+                "replay_mode": "replay_from_node",
+            },
+        )
+        assert resp.status_code == 202
+        new_run_id = uuid.UUID(resp.json()["id"])
+
+        copied = await db.execute(
+            select(ProjectArtifact).where(
+                ProjectArtifact.run_id == new_run_id,
+                ProjectArtifact.artifact_type == ArtifactType.PRD,
+            )
+        )
+        copied_prd = copied.scalar_one()
+        assert copied_prd.version > 1
+        assert copied_prd.content["executive_summary"] == "v1"
+
+    @pytest.mark.asyncio
+    async def test_retry_failed_unchanged(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        """Existing retry_failed behavior works the same: mutates in place."""
+        run = ProjectRun(
+            project_id=seed_project.id,
+            status=ProjectStatus.FAILED,
+            current_node="EndFailed",
+        )
+        db.add(run)
+        await db.flush()
+
+        # Add an audit event so that IngestPrompt is considered "reached"
+        from app.models.audit_event import AuditEvent
+
+        audit = AuditEvent(
+            project_id=seed_project.id,
+            event_type="orchestrator.run_started",
+            event_payload={"run_id": str(run.id), "to_node": "IngestPrompt"},
+        )
+        db.add(audit)
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "IngestPrompt", "replay_mode": "retry_failed"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        # Should be the same run ID (mutated in place)
+        assert data["id"] == str(run.id)

@@ -65,7 +65,9 @@ async def submit_approval(
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalEvent:
     # Load project
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useArtifacts, useProject } from "@/lib/hooks";
 
 const NAV_ITEMS = [
   {
@@ -29,6 +30,13 @@ const NAV_ITEMS = [
     ),
   },
 ];
+
+const ARTIFACT_SUB_ITEMS = [
+  { label: "PRD", type: "prd" },
+  { label: "Screens", type: "design_spec" },
+  { label: "Tech Plan", type: "tech_plan" },
+  { label: "Code Base", type: "code_snapshot" },
+] as const;
 
 function Logo() {
   return (
@@ -71,6 +79,43 @@ function NavLink({
   );
 }
 
+function ExternalNavLink({
+  href,
+  label,
+  icon,
+  onNavigate,
+}: {
+  href?: string;
+  label: string;
+  icon: React.ReactNode;
+  onNavigate?: () => void;
+}) {
+  if (!href) {
+    return (
+      <span className="sidebar-link opacity-40 cursor-default">
+        {icon}
+        <span className="text-text-3">{label}</span>
+        <span className="text-[9px] text-text-3 ml-auto">N/A</span>
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={onNavigate}
+      className="sidebar-link hover:text-accent"
+    >
+      {icon}
+      <span>{label}</span>
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="ml-auto opacity-50">
+        <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </a>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -79,8 +124,72 @@ export function Sidebar() {
     projectMatch && projectMatch[1] && projectMatch[1] !== "new"
       ? projectMatch[1]
       : null;
-  const artifactType = pathname.match(/^\/projects\/[^/]+\/artifacts\/([^/]+)/)?.[1] ?? "prd";
   const approvalStage = pathname.match(/^\/projects\/[^/]+\/approve\/([^/]+)/)?.[1] ?? "prd";
+  const isOnArtifactsRoute = pathname.includes("/artifacts/");
+
+  const [artifactsExpanded, setArtifactsExpanded] = useState(isOnArtifactsRoute);
+
+  // Expand artifacts when navigating to an artifact route
+  useEffect(() => {
+    if (isOnArtifactsRoute) setArtifactsExpanded(true);
+  }, [isOnArtifactsRoute]);
+
+  // Fetch project data for external links
+  const { data: project } = useProject(projectId ?? "", {
+    refetchInterval: undefined,
+  });
+  const { data: artifactsData } = useArtifacts(projectId ?? "", {
+    refetchInterval: undefined,
+  });
+
+  const latestDesignArtifact = artifactsData?.items
+    ?.filter((a) => a.artifactType === "design_spec")
+    ?.sort((a, b) => b.version - a.version)?.[0];
+  const latestDeployArtifact = artifactsData?.items
+    ?.filter((a) => a.artifactType === "deploy_report")
+    ?.sort((a, b) => b.version - a.version)?.[0];
+
+  const designMetadata = (() => {
+    const content = latestDesignArtifact?.content;
+    if (!content || typeof content !== "object") return {};
+    const record = content as Record<string, unknown>;
+    const meta = record.__design_metadata ?? record.metadata ?? record.provider_metadata;
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
+    return meta as Record<string, unknown>;
+  })();
+
+  const stitchProjectUrl = (() => {
+    const direct =
+      (designMetadata.stitch_project_url as string | undefined) ??
+      (designMetadata.stitch_url as string | undefined) ??
+      (designMetadata.project_url as string | undefined);
+    if (direct) return direct;
+    const projectId = designMetadata.stitch_project_id;
+    if (typeof projectId === "string" && projectId.trim()) {
+      return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId)}`;
+    }
+    return undefined;
+  })();
+
+  const supabaseDashboardUrl = (() => {
+    const content = latestDeployArtifact?.content;
+    if (!content || typeof content !== "object") return undefined;
+    const record = content as Record<string, unknown>;
+    const supabase =
+      record.supabase && typeof record.supabase === "object" && !Array.isArray(record.supabase)
+        ? (record.supabase as Record<string, unknown>)
+        : {};
+    const direct =
+      (record.supabase_dashboard_url as string | undefined) ??
+      (supabase.dashboard_url as string | undefined) ??
+      (supabase.project_url as string | undefined);
+    if (direct) return direct;
+    const ref = supabase.supabase_ref;
+    if (typeof ref === "string" && ref.trim()) {
+      return `https://supabase.com/dashboard/project/${encodeURIComponent(ref)}`;
+    }
+    return undefined;
+  })();
 
   useEffect(() => {
     if (!open) return;
@@ -149,17 +258,117 @@ export function Sidebar() {
                   </svg>
                 }
               />
-              <NavLink
-                href={`/projects/${projectId}/artifacts/${artifactType}`}
-                label="Artifacts"
-                onNavigate={() => setOpen(false)}
-                icon={
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M4 4h16v16H4z" />
-                    <path d="M4 10h16M10 4v16" />
+
+              {/* Collapsible Artifacts group */}
+              <div>
+                <button
+                  onClick={() => setArtifactsExpanded(!artifactsExpanded)}
+                  className={cn(
+                    "sidebar-link w-full justify-between",
+                    isOnArtifactsRoute && "sidebar-link-active"
+                  )}
+                  aria-expanded={artifactsExpanded}
+                >
+                  <div className="flex items-center gap-2">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M4 4h16v16H4z" />
+                      <path d="M4 10h16M10 4v16" />
+                    </svg>
+                    <span>Artifacts</span>
+                  </div>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className={cn("transition-transform", artifactsExpanded && "rotate-90")}
+                  >
+                    <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                }
-              />
+                </button>
+
+                {artifactsExpanded && (
+                  <div role="group" className="pl-4 space-y-0.5 mt-0.5">
+                    {ARTIFACT_SUB_ITEMS.map(({ label, type }) => {
+                      const href = `/projects/${projectId}/artifacts/${type}`;
+                      const isActive = pathname === href;
+                      const externalHref =
+                        type === "design_spec"
+                          ? stitchProjectUrl
+                          : type === "code_snapshot"
+                            ? project?.githubRepoUrl
+                            : undefined;
+                      const externalLabel =
+                        type === "design_spec"
+                          ? "Stitch"
+                          : type === "code_snapshot"
+                            ? "GitHub"
+                            : undefined;
+                      return (
+                        <div key={type} className="flex items-center gap-1">
+                          <Link
+                            href={href}
+                            onClick={() => setOpen(false)}
+                            className={cn(
+                              "flex-1 block px-3 py-1.5 rounded-lg text-xs transition-colors",
+                              isActive
+                                ? "text-accent bg-accent-bg"
+                                : "text-text-2 hover:text-text-1 hover:bg-surface-2"
+                            )}
+                          >
+                            {label}
+                          </Link>
+                          {externalLabel && (
+                            externalHref ? (
+                              <a
+                                href={externalHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => setOpen(false)}
+                                className="px-2 py-1 rounded-md text-[10px] font-mono-display text-accent hover:bg-accent-bg"
+                                title={`Open ${externalLabel}`}
+                              >
+                                {externalLabel}
+                              </a>
+                            ) : (
+                              <span className="px-2 py-1 rounded-md text-[9px] font-mono-display text-text-3">
+                                N/A
+                              </span>
+                            )
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* External destinations */}
+                    <div className="pt-1.5 mt-1.5 border-t border-border-0/50 space-y-0.5">
+                      <ExternalNavLink
+                        href={project?.liveDeploymentUrl}
+                        label="Vercel Site"
+                        onNavigate={() => setOpen(false)}
+                        icon={
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 1L1 22h22L12 1z" />
+                          </svg>
+                        }
+                      />
+                      <ExternalNavLink
+                        href={supabaseDashboardUrl}
+                        label="Supabase Dashboard"
+                        onNavigate={() => setOpen(false)}
+                        icon={
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M7 20l10-16 2 4-8 12-4 0z" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <NavLink
                 href={`/projects/${projectId}/approve/${approvalStage}`}
                 label="Approvals"

@@ -12,6 +12,7 @@ import type {
   ProjectRun,
   ProjectStatus,
 } from "@/types/domain";
+import type { StackJson } from "@/types/stack";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -22,6 +23,8 @@ type ProjectWire = {
   status: ProjectStatus;
   github_repo_url?: string;
   live_deployment_url?: string;
+  deleted_at?: string;
+  stack_json?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -175,6 +178,8 @@ function toProject(data: ProjectWire): Project {
     status: data.status,
     githubRepoUrl: data.github_repo_url,
     liveDeploymentUrl: data.live_deployment_url,
+    deletedAt: data.deleted_at,
+    stackJson: data.stack_json,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
   };
@@ -277,11 +282,12 @@ export async function listProjects(): Promise<{ items: ProjectListItem[] }> {
 
 export async function createProject(
   initial_prompt: string,
-  constraints?: Record<string, unknown>
+  constraints?: Record<string, unknown>,
+  stack_json?: StackJson
 ): Promise<Project> {
   const data = await request<ProjectWire>("/v1/projects", {
     method: "POST",
-    body: JSON.stringify({ initial_prompt, constraints }),
+    body: JSON.stringify({ initial_prompt, constraints, stack_json }),
   });
   return toProject(data);
 }
@@ -291,17 +297,48 @@ export async function getProject(id: string): Promise<Project> {
   return toProject(data);
 }
 
+export async function deleteProject(id: string): Promise<{ id: string; deleted_at: string }> {
+  return request(`/v1/projects/${id}`, { method: "DELETE" });
+}
+
+export async function updateProject(
+  id: string,
+  body: { initial_prompt?: string; stack_json?: StackJson }
+): Promise<Project> {
+  const data = await request<ProjectWire>(`/v1/projects/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  return toProject(data);
+}
+
+export async function restartProject(id: string): Promise<Project> {
+  const data = await request<ProjectWire>(`/v1/projects/${id}/restart`, {
+    method: "POST",
+  });
+  return toProject(data);
+}
+
 // Runs
 export async function createRun(
   projectId: string,
-  opts?: { resume_from_node?: string; model_profile?: ModelProfile; idempotency_key?: string }
+  opts?: {
+    resume_from_node?: string;
+    model_profile?: ModelProfile;
+    idempotency_key?: string;
+    replay_mode?: "retry_failed" | "replay_from_node";
+  }
 ): Promise<ProjectRun> {
   const headers: Record<string, string> = {};
   if (opts?.idempotency_key) headers["Idempotency-Key"] = opts.idempotency_key;
   const data = await request<ProjectRunWire>(`/v1/projects/${projectId}/runs`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ resume_from_node: opts?.resume_from_node, model_profile: opts?.model_profile }),
+    body: JSON.stringify({
+      resume_from_node: opts?.resume_from_node,
+      model_profile: opts?.model_profile,
+      replay_mode: opts?.replay_mode,
+    }),
   });
   return toProjectRun(data);
 }

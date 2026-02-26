@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import ModelProfile, ProjectStatus
 
 
+class ReplayMode(StrEnum):
+    RETRY_FAILED = "retry_failed"
+    REPLAY_FROM_NODE = "replay_from_node"
+
+
 class CreateRunRequest(BaseModel):
     resume_from_node: str | None = None
     model_profile: ModelProfile | None = None
+    replay_mode: ReplayMode | None = None
 
 
 class ProjectRun(BaseModel):

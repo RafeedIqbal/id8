@@ -1,20 +1,35 @@
 "use client";
 
 import type { ProjectArtifact } from "@/types/domain";
+import { isRecord, safeString, safeArray, safeRecord, safeBoolean } from "@/lib/artifact-guards";
+import { RawJsonInspector } from "./raw-json-inspector";
 
 type Severity = "critical" | "high" | "medium" | "low";
 
+const VALID_SEVERITIES = new Set<string>(["critical", "high", "medium", "low"]);
+
 interface Finding {
-  severity?: Severity;
+  severity: Severity;
   rule_id?: string;
-  rule?: string;
   file_path?: string;
-  file?: string;
   line_number?: number;
-  line?: number;
   message?: string;
   remediation?: string;
-  resolved?: boolean;
+  resolved: boolean;
+}
+
+function toFinding(raw: unknown): Finding | null {
+  if (!isRecord(raw)) return null;
+  const sev = safeString(raw.severity)?.toLowerCase() ?? "low";
+  return {
+    severity: (VALID_SEVERITIES.has(sev) ? sev : "low") as Severity,
+    rule_id: safeString(raw.rule_id) ?? safeString(raw.rule),
+    file_path: safeString(raw.file_path) ?? safeString(raw.file),
+    line_number: typeof raw.line_number === "number" ? raw.line_number : typeof raw.line === "number" ? raw.line : undefined,
+    message: safeString(raw.message),
+    remediation: safeString(raw.remediation),
+    resolved: safeBoolean(raw.resolved) ?? false,
+  };
 }
 
 const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -29,26 +44,38 @@ function SeverityBadge({ severity }: { severity: string }) {
 }
 
 export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
-  const c = artifact.content as Record<string, unknown>;
-  const findings = ((c.findings ?? []) as Finding[]).sort(
-    (a, b) => (SEVERITY_ORDER[a.severity ?? "low"] ?? 4) - (SEVERITY_ORDER[b.severity ?? "low"] ?? 4)
-  );
-  const summary = (c.summary ?? {}) as Partial<Record<Severity | "total", number>>;
-
-  const counts = {
-    critical: summary.critical ?? 0,
-    high: summary.high ?? 0,
-    medium: summary.medium ?? 0,
-    low: summary.low ?? 0,
-    total: summary.total ?? findings.length,
-  };
-  if (!summary.total) {
-    for (const f of findings) {
-      if (f.severity && f.severity in counts) counts[f.severity as Severity]++;
-    }
-    counts.total = findings.length;
+  const c = safeRecord(artifact.content);
+  if (!c) {
+    return <RawJsonInspector data={artifact.content} warning="Artifact content is not a valid object." />;
   }
+
+  const findings = safeArray(c.findings)
+    .map(toFinding)
+    .filter((f): f is Finding => f !== null)
+    .slice() // clone before sorting to avoid mutating
+    .sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 4) - (SEVERITY_ORDER[b.severity] ?? 4));
+
+  const summaryRecord = safeRecord(c.summary);
+
+  // Compute counts from findings (avoids double-counting bug from summary + findings)
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, total: findings.length };
+  for (const f of findings) {
+    counts[f.severity]++;
+  }
+
+  // Only use summary counts if there are no findings to count from
+  if (findings.length === 0 && summaryRecord) {
+    for (const sev of ["critical", "high", "medium", "low"] as const) {
+      const val = summaryRecord[sev];
+      if (typeof val === "number") counts[sev] = val;
+    }
+    const total = summaryRecord.total;
+    counts.total = typeof total === "number" ? total : 0;
+  }
+
   const unresolvedCount = findings.filter((f) => !f.resolved).length;
+
+  const hasContent = findings.length > 0 || (summaryRecord && Object.keys(summaryRecord).length > 0);
 
   return (
     <div className="animate-fade-in space-y-6">
@@ -84,15 +111,15 @@ export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
                 {findings.map((f, i) => (
                   <tr key={i} className="border-b border-border-0/50 hover:bg-surface-2/30 transition-colors">
                     <td className="py-3 px-4">
-                      <SeverityBadge severity={f.severity ?? "low"} />
+                      <SeverityBadge severity={f.severity} />
                     </td>
-                    <td className="py-3 px-4 font-mono-display text-xs text-text-1">{f.rule_id ?? f.rule ?? "—"}</td>
+                    <td className="py-3 px-4 font-mono-display text-xs text-text-1">{f.rule_id ?? "—"}</td>
                     <td className="py-3 px-4 font-mono-display text-xs text-accent">
-                      {f.file_path ?? f.file}
-                      {(f.line_number ?? f.line) != null && <span className="text-text-3">:{f.line_number ?? f.line}</span>}
+                      {f.file_path ?? "—"}
+                      {f.line_number != null && <span className="text-text-3">:{f.line_number}</span>}
                     </td>
                     <td className="py-3 px-4 text-xs text-text-2 max-w-[300px]">
-                      <div>{f.message}</div>
+                      <div>{f.message ?? "—"}</div>
                       {f.remediation && (
                         <div className="text-success mt-1 text-[11px]">Fix: {f.remediation}</div>
                       )}
@@ -115,11 +142,13 @@ export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
             </table>
           </div>
         </div>
-      ) : (
+      ) : hasContent ? (
         <div className="glass p-8 text-center">
           <div className="text-success text-4xl mb-2">&#10003;</div>
           <p className="text-sm text-text-1">No security findings.</p>
         </div>
+      ) : (
+        <RawJsonInspector data={artifact.content} warning="No recognized security report fields found. Showing raw content." />
       )}
     </div>
   );

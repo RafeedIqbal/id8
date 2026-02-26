@@ -11,6 +11,12 @@ paths:
     get:
       summary: List projects with latest run summaries
       operationId: listProjects
+      parameters:
+        - name: include_deleted
+          in: query
+          required: false
+          schema:
+            type: boolean
       responses:
         '200':
           description: Project list
@@ -43,6 +49,49 @@ paths:
       responses:
         '200':
           description: Project found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+    patch:
+      summary: Update editable setup fields for a project
+      operationId: updateProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+    delete:
+      summary: Soft-delete a project
+      operationId: deleteProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteProjectResponse'
+  /v1/projects/{projectId}/restart:
+    post:
+      summary: Restart project pipeline from IngestPrompt
+      operationId: restartProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '202':
+          description: Restart accepted
           content:
             application/json:
               schema:
@@ -301,8 +350,17 @@ components:
         constraints:
           type: object
           additionalProperties: true
+        stack_json:
+          $ref: '#/components/schemas/StackJson'
       required:
         - initial_prompt
+    UpdateProjectRequest:
+      type: object
+      properties:
+        initial_prompt:
+          type: string
+        stack_json:
+          $ref: '#/components/schemas/StackJson'
     CreateRunRequest:
       type: object
       properties:
@@ -310,6 +368,41 @@ components:
           type: string
         model_profile:
           $ref: '#/components/schemas/ModelProfile'
+        replay_mode:
+          $ref: '#/components/schemas/ReplayMode'
+    ReplayMode:
+      type: string
+      enum:
+        - retry_failed
+        - replay_from_node
+    StackJson:
+      type: object
+      properties:
+        frontend_framework:
+          type: string
+          enum: [nextjs, react, vue, svelte]
+        backend_framework:
+          type: string
+          enum: [fastapi, express, nestjs, django]
+        database:
+          type: string
+          enum: [postgresql, mysql, sqlite]
+        database_provider:
+          type: string
+          enum: [supabase, neon, planetscale, local]
+        hosting_frontend:
+          type: string
+          enum: [vercel]
+        hosting_backend:
+          type: string
+          enum: [supabase, vercel]
+      required:
+        - frontend_framework
+        - backend_framework
+        - database
+        - database_provider
+        - hosting_frontend
+        - hosting_backend
     DesignGenerateRequest:
       type: object
       properties:
@@ -381,6 +474,11 @@ components:
           type: string
         live_deployment_url:
           type: string
+        deleted_at:
+          type: string
+          format: date-time
+        stack_json:
+          $ref: '#/components/schemas/StackJson'
         created_at:
           type: string
           format: date-time
@@ -394,6 +492,18 @@ components:
         - status
         - created_at
         - updated_at
+    DeleteProjectResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        deleted_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - deleted_at
     ProjectRunSummary:
       type: object
       properties:

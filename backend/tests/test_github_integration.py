@@ -743,6 +743,56 @@ async def test_run_github_flow_continues_when_check_run_permissions_missing() ->
     assert result.context_updates["check_statuses"] == []
 
 
+@pytest.mark.asyncio
+async def test_run_github_flow_skips_check_polling_when_requested() -> None:
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {"initial_prompt": "Create app"}
+    ctx.db = MagicMock()
+
+    project = MagicMock()
+    project.github_repo_url = "https://github.com/RafeedIqbal/id8-a22ad2deb369"
+
+    client = MagicMock()
+    client.push_files = AsyncMock(return_value="commit-sha")
+    client.poll_checks = AsyncMock(
+        side_effect=AssertionError("poll_checks must not be called when skip_check_runs=True")
+    )
+    client.merge_pull_request = AsyncMock(
+        return_value=MergeResult(sha="merge-sha", merged=True, message="merged")
+    )
+
+    pr_info = PrInfo(
+        number=13,
+        html_url="https://github.com/RafeedIqbal/id8-a22ad2deb369/pull/13",
+        state="open",
+        head_sha="head-sha",
+        title="feat(id8): Create app",
+    )
+
+    with (
+        patch("app.orchestrator.handlers.prepare_pr._load_project", new=AsyncMock(return_value=project)),
+        patch("app.orchestrator.handlers.prepare_pr._ensure_branch", new=AsyncMock(return_value="main")),
+        patch("app.orchestrator.handlers.prepare_pr._find_closed_pull_request", new=AsyncMock(return_value=None)),
+        patch("app.orchestrator.handlers.prepare_pr._ensure_pull_request", new=AsyncMock(return_value=pr_info)),
+        patch("app.orchestrator.handlers.prepare_pr._persist_prepare_pr_metadata", new=AsyncMock()),
+        patch("app.orchestrator.handlers.prepare_pr.emit_audit_event", new=AsyncMock()),
+    ):
+        result = await _run_github_flow(
+            ctx,
+            client,
+            files=[{"path": "README.md", "content": "# generated"}],
+            skip_check_runs=True,
+        )
+
+    assert result.outcome == "success"
+    client.poll_checks.assert_not_awaited()
+    client.merge_pull_request.assert_awaited_once()
+    assert result.context_updates is not None
+    assert result.context_updates["check_statuses"] == []
+
+
 # ---------------------------------------------------------------------------
 # _find_closed_pull_request
 # ---------------------------------------------------------------------------
@@ -899,3 +949,30 @@ async def test_prepare_pr_handler_raises_rate_limit_error() -> None:
             ):
                 with pytest.raises(RateLimitError):
                     await handler.execute(ctx)
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_handler_skips_check_runs_for_pat_mode() -> None:
+    handler = PreparePRHandler()
+
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {}
+
+    with patch(
+        "app.orchestrator.handlers.prepare_pr._load_code_snapshot",
+        new_callable=AsyncMock,
+        return_value={"files": [{"path": "main.py", "content": "x"}]},
+    ):
+        with patch("app.orchestrator.handlers.prepare_pr.resolve_github_auth") as mock_auth:
+            mock_auth.return_value = GitHubAuth(mode="token", token="tok")
+            with patch(
+                "app.orchestrator.handlers.prepare_pr._run_github_flow",
+                new_callable=AsyncMock,
+                return_value=MagicMock(outcome="success"),
+            ) as mock_run_flow:
+                await handler.execute(ctx)
+
+    assert mock_run_flow.await_count == 1
+    assert mock_run_flow.await_args.kwargs["skip_check_runs"] is True

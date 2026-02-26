@@ -7,11 +7,18 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import ProjectStatus
+from app.schemas.stack import StackJson
 
 
 class CreateProjectRequest(BaseModel):
     initial_prompt: str
     constraints: dict[str, Any] | None = None
+    stack_json: StackJson | None = None
+
+
+class UpdateProjectRequest(BaseModel):
+    initial_prompt: str | None = None
+    stack_json: StackJson | None = None
 
 
 class ProjectRunSummary(BaseModel):
@@ -30,6 +37,8 @@ class Project(BaseModel):
     status: ProjectStatus
     github_repo_url: str | None = None
     live_deployment_url: str | None = None
+    deleted_at: datetime | None = None
+    stack_json: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -42,6 +51,11 @@ class ProjectListItem(Project):
 
 class ProjectListResponse(BaseModel):
     items: list[ProjectListItem]
+
+
+class DeleteProjectResponse(BaseModel):
+    id: uuid.UUID
+    deleted_at: datetime
 
 
 ProjectResponse = Project

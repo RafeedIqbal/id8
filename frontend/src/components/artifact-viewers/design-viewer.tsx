@@ -3,6 +3,8 @@
 import { useState } from "react";
 import type { ProjectArtifact } from "@/types/domain";
 import { cn } from "@/lib/utils";
+import { isRecord, isString, safeString, safeArray, safeRecord } from "@/lib/artifact-guards";
+import { RawJsonInspector } from "./raw-json-inspector";
 
 interface Screen {
   id?: string;
@@ -18,15 +20,38 @@ interface Screen {
   assets?: string[];
 }
 
+function toScreen(raw: unknown): Screen | null {
+  if (!isRecord(raw)) return null;
+  const components = safeArray(raw.components).filter(isRecord).map((comp) => ({
+    id: safeString(comp.id),
+    name: safeString(comp.name),
+    type: safeString(comp.type),
+    properties: safeRecord(comp.properties),
+    props: safeRecord(comp.props),
+  }));
+  return {
+    id: safeString(raw.id),
+    name: safeString(raw.name),
+    description: safeString(raw.description),
+    components: components.length > 0 ? components : undefined,
+    assets: safeArray(raw.assets).filter(isString),
+  };
+}
+
 export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
-  const c = artifact.content as Record<string, unknown>;
-  const screens = (c.screens ?? c.screen_list ?? []) as Screen[];
-  const designMeta = (c.__design_metadata ?? c.metadata ?? c.provider_metadata ?? {}) as Record<string, unknown>;
-  const provider = (designMeta.provider_used ?? designMeta.provider ?? c.provider) as string | undefined;
+  const c = safeRecord(artifact.content);
+  const rawScreens = c ? safeArray(c.screens ?? c.screen_list) : [];
+  const screens = rawScreens.map(toScreen).filter((s): s is Screen => s !== null);
+  const designMeta = c ? (safeRecord(c.__design_metadata) ?? safeRecord(c.metadata) ?? safeRecord(c.provider_metadata) ?? {}) : {};
+  const provider = c ? (safeString(designMeta.provider_used) ?? safeString(designMeta.provider) ?? safeString(c.provider)) : undefined;
   const providerMeta = designMeta;
 
   const [selectedIdx, setSelectedIdx] = useState(0);
   const selected = screens[selectedIdx];
+
+  if (!c) {
+    return <RawJsonInspector data={artifact.content} warning="Artifact content is not a valid object." />;
+  }
 
   return (
     <div className="animate-fade-in">
@@ -38,10 +63,7 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
       )}
 
       {screens.length === 0 ? (
-        <div className="glass-raised p-6 text-center">
-          <p className="text-sm text-text-2">No screens defined yet.</p>
-          <pre className="text-xs mt-4 text-left">{JSON.stringify(artifact.content, null, 2)}</pre>
-        </div>
+        <RawJsonInspector data={artifact.content} warning="No screens defined. Showing raw content." />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
           {/* Screen list */}
@@ -95,9 +117,9 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
                       {selected.components.map((comp, i) => (
                         <tr key={i} className="border-b border-border-0/50">
                           <td className="py-2.5 pr-4 font-mono-display text-xs text-accent">
-                            {comp.name ?? comp.id}
+                            {comp.name ?? comp.id ?? "—"}
                           </td>
-                          <td className="py-2.5 pr-4 text-text-2 text-xs">{comp.type}</td>
+                          <td className="py-2.5 pr-4 text-text-2 text-xs">{comp.type ?? "—"}</td>
                           <td className="py-2.5 text-text-3 text-xs font-mono-display">
                             {(comp.properties ?? comp.props)
                               ? Object.entries(comp.properties ?? comp.props ?? {})

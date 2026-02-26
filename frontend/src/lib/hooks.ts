@@ -2,6 +2,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import type { ApprovalStage, ModelProfile, DesignProvider } from "@/types/domain";
+import type { StackJson } from "@/types/stack";
 
 // ── Projects ──────────────────────────────────────────────────
 export function useProjects() {
@@ -20,9 +21,44 @@ export function useProject(id: string, opts?: { refetchInterval?: number }) {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { prompt: string; constraints?: Record<string, unknown> }) =>
-      api.createProject(vars.prompt, vars.constraints),
+    mutationFn: (vars: { prompt: string; constraints?: Record<string, unknown>; stackJson?: StackJson }) =>
+      api.createProject(vars.prompt, vars.constraints, vars.stackJson),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useDeleteProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteProject(projectId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+  });
+}
+
+export function useUpdateProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { initial_prompt?: string; stack_json?: StackJson }) =>
+      api.updateProject(projectId, vars),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+export function useRestartProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.restartProject(projectId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["latestRun", projectId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", projectId] });
+    },
   });
 }
 
@@ -39,8 +75,16 @@ export function useLatestRun(projectId: string, opts?: { refetchInterval?: numbe
 export function useCreateRun(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars?: { resumeFromNode?: string; modelProfile?: ModelProfile }) =>
-      api.createRun(projectId, { resume_from_node: vars?.resumeFromNode, model_profile: vars?.modelProfile }),
+    mutationFn: (vars?: {
+      resumeFromNode?: string;
+      modelProfile?: ModelProfile;
+      replayMode?: "retry_failed" | "replay_from_node";
+    }) =>
+      api.createRun(projectId, {
+        resume_from_node: vars?.resumeFromNode,
+        model_profile: vars?.modelProfile,
+        replay_mode: vars?.replayMode,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["latestRun", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });

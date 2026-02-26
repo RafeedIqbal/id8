@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
 import { useProject, useLatestRun, useArtifacts, useCreateRun, useDesignTools } from "@/lib/hooks";
 import { Breadcrumbs } from "@/components/breadcrumbs";
@@ -8,6 +8,8 @@ import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { NodeTimeline } from "@/components/node-timeline";
 import { ArtifactCard } from "@/components/artifact-card";
 import { EmptyState } from "@/components/empty-state";
+import { DeleteProjectModal } from "@/components/delete-project-modal";
+import { ProjectSettingsPanel } from "@/components/project-settings-panel";
 import { NODE_LABELS } from "@/lib/constants";
 import { resolveResumeNode } from "@/lib/run-failure";
 import { formatDateTime, truncate } from "@/lib/utils";
@@ -30,6 +32,9 @@ const COST_PER_1K_TOKENS: Record<string, number> = {
   customtools: 0.015,
   fallback: 0.005,
 };
+
+// Statuses where deletion is allowed
+const DELETABLE_STATUSES: ProjectStatus[] = ["ideation", "deployed", "failed"];
 
 function buildUsageSummary(items: Array<{ content: Record<string, unknown>; modelProfile?: string }>) {
   let promptTokens = 0;
@@ -105,6 +110,9 @@ export default function ProjectDetailPage({
   const createRun = useCreateRun(id);
   const designTools = useDesignTools();
 
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
   const artifacts = artifactsData?.items ?? [];
   const usageSummary = buildUsageSummary(artifacts);
   const latestByType = new Map<ArtifactType, (typeof artifacts)[number]>();
@@ -121,13 +129,20 @@ export default function ProjectDetailPage({
   const resumeNode = resolveResumeNode(
     runDetail?.currentNode,
     runDetail?.timeline,
-    project.status === "failed"
+    project?.status === "failed"
   );
   const resumeLabel = resumeNode ? (NODE_LABELS[resumeNode] ?? resumeNode) : "Failed Step";
   const stitchAuthError =
     runDetail?.lastErrorMessage?.toLowerCase().includes("stitch") ||
     runDetail?.lastErrorMessage?.toLowerCase().includes("credentials");
   const stitchAuthConfigured = Boolean(designTools.data?.stitchAuthConfigured);
+
+  const isTerminal = project?.status === "failed" || project?.status === "deployed";
+  const canDelete = project && DELETABLE_STATUSES.includes(project.status);
+
+  function handleReplay(node: string, mode: "retry_failed" | "replay_from_node") {
+    createRun.mutate({ resumeFromNode: node, replayMode: mode });
+  }
 
   if (loadingProject) return <ProjectSkeleton />;
   if (projectError) {
@@ -187,7 +202,38 @@ export default function ProjectDetailPage({
             )}
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="btn btn-ghost text-xs"
+            title="Project Settings"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+            </svg>
+            Settings
+          </button>
+          {canDelete && (
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="btn btn-ghost text-xs text-error hover:bg-error-bg"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Delete
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Settings panel */}
+      {showSettings && (
+        <div className="mb-6">
+          <ProjectSettingsPanel project={project} onClose={() => setShowSettings(false)} />
+        </div>
+      )}
 
       {/* Main grid */}
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6">
@@ -210,7 +256,7 @@ export default function ProjectDetailPage({
               )}
               {project.status === "failed" && (
                 <button
-                  onClick={() => createRun.mutate({ resumeFromNode: resumeNode })}
+                  onClick={() => createRun.mutate({ resumeFromNode: resumeNode, replayMode: "retry_failed" })}
                   disabled={createRun.isPending}
                   className="btn btn-primary w-full"
                 >
@@ -231,7 +277,7 @@ export default function ProjectDetailPage({
               )}
               {!waitingStage && project.status !== "ideation" && project.status !== "failed" && project.status !== "deployed" && (
                 <div className="w-full text-center text-xs text-text-3 py-2 font-mono-display">
-                  Pipeline running\u2026
+                  Pipeline running&hellip;
                 </div>
               )}
               {project.status === "deployed" && (
@@ -263,6 +309,7 @@ export default function ProjectDetailPage({
                 currentNode={runDetail.currentNode}
                 timeline={runDetail.timeline}
                 status={runDetail.status}
+                onReplay={isTerminal ? handleReplay : undefined}
               />
             ) : (
               <p className="text-sm text-text-3 text-center py-4">
@@ -399,6 +446,14 @@ export default function ProjectDetailPage({
           </div>
         </div>
       </div>
+
+      {/* Delete modal */}
+      {showDeleteModal && (
+        <DeleteProjectModal
+          projectId={project.id}
+          onClose={() => setShowDeleteModal(false)}
+        />
+      )}
     </div>
   );
 }

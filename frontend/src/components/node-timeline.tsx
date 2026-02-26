@@ -86,12 +86,15 @@ export function NodeTimeline({
   currentNode,
   timeline = [],
   status,
+  onReplay,
 }: {
   currentNode?: string;
   timeline?: RunTimelineEvent[];
   status?: string;
+  onReplay?: (node: string, mode: "retry_failed" | "replay_from_node") => void;
 }) {
   const isFailed = status === "failed";
+  const isTerminal = status === "failed" || status === "deployed";
   const failedNode = inferFailureNode(currentNode, timeline, isFailed);
   const nodeStates = getNodeStates(currentNode, timeline, isFailed, failedNode);
 
@@ -108,10 +111,43 @@ export function NodeTimeline({
         const info = nodeStates.get(node) ?? { state: "pending" as NodeState };
         const label = NODE_LABELS[node] ?? node;
 
+        // Determine which action button to show
+        let actionButton: React.ReactNode = null;
+        if (onReplay && node !== "EndSuccess" && node !== "EndFailed") {
+          if (info.state === "failed") {
+            actionButton = (
+              <button
+                onClick={() => onReplay(node, "retry_failed")}
+                className="text-[10px] font-mono-display text-error hover:text-error/80 border border-error/30 rounded px-1.5 py-0.5 hover:bg-error-bg transition-colors"
+              >
+                Retry
+              </button>
+            );
+          } else if (info.state === "completed" && isTerminal) {
+            actionButton = (
+              <button
+                onClick={() => onReplay(node, "replay_from_node")}
+                className="text-[10px] font-mono-display text-accent hover:text-accent/80 border border-accent/30 rounded px-1.5 py-0.5 hover:bg-accent-bg transition-colors"
+              >
+                Replay
+              </button>
+            );
+          } else if (info.state === "pending") {
+            actionButton = (
+              <span
+                className="text-[10px] font-mono-display text-text-3 cursor-default"
+                title="This node was not reached"
+              >
+                Not reached
+              </span>
+            );
+          }
+        }
+
         return (
           <div key={node} className="timeline-node">
             <NodeDot state={info.state} />
-            <div className="flex items-baseline justify-between gap-4 min-h-[32px] pt-[6px]">
+            <div className="flex items-baseline justify-between gap-2 min-h-[32px] pt-[6px]">
               <span
                 className={cn(
                   "text-sm font-medium",
@@ -123,21 +159,24 @@ export function NodeTimeline({
               >
                 {label}
               </span>
-              {info.timestamp && (
-                <span className="font-mono-display text-[11px] text-text-3 tabular-nums">
-                  {formatTime(info.timestamp)}
-                </span>
-              )}
-              {info.state === "current" && !isFailed && (
-                <span className="font-mono-display text-[11px] text-accent animate-pulse">
-                  Processing\u2026
-                </span>
-              )}
-              {info.state === "failed" && (
-                <span className="font-mono-display text-[11px] text-error">
-                  Error
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {actionButton}
+                {info.timestamp && (
+                  <span className="font-mono-display text-[11px] text-text-3 tabular-nums">
+                    {formatTime(info.timestamp)}
+                  </span>
+                )}
+                {info.state === "current" && !isFailed && (
+                  <span className="font-mono-display text-[11px] text-accent animate-pulse">
+                    Processing&hellip;
+                  </span>
+                )}
+                {info.state === "failed" && !actionButton && (
+                  <span className="font-mono-display text-[11px] text-error">
+                    Error
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         );

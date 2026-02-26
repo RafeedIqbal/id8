@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from app.db import async_session, get_db
 from app.dependencies.idempotency import get_idempotency_key
 from app.models.approval_event import ApprovalEvent
 from app.models.audit_event import AuditEvent
-from app.models.enums import ApprovalStage, ProjectStatus
+from app.models.enums import ApprovalStage, ArtifactType, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
@@ -24,6 +24,7 @@ from app.schemas.run import (
     CreateRunRequest,
     ProjectRunDetailResponse,
     ProjectRunResponse,
+    ReplayMode,
     RunTimelineEvent,
 )
 
@@ -56,10 +57,14 @@ _WAIT_NODE_TO_STAGE: dict[NodeName, ApprovalStage] = {
 _TIMELINE_EVENT_TYPES = (
     "orchestrator.run_started",
     "orchestrator.run_resumed",
+    "orchestrator.run_replayed",
     "orchestrator.node_transition",
     "orchestrator.run_failed",
     "orchestrator.run_requeued",
 )
+
+_TERMINAL_RUN_STATUSES = {ProjectStatus.DEPLOYED, ProjectStatus.FAILED}
+_TERMINAL_RUN_NODES = {NodeName.END_SUCCESS, NodeName.END_FAILED}
 
 
 async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
@@ -222,6 +227,83 @@ async def _was_node_previously_reached(
     return False
 
 
+async def _copy_artifacts_before_node(
+    *,
+    db: AsyncSession,
+    source_run_id: uuid.UUID,
+    new_run_id: uuid.UUID,
+    project_id: uuid.UUID,
+    target_node: NodeName,
+) -> None:
+    """Copy artifacts from nodes before target_node into the new run."""
+    target_idx = _NODE_PROGRESS_INDEX.get(target_node, 0)
+
+    # Collect artifact types for nodes before the target
+    prior_artifact_types = set()
+    for node, idx in _NODE_PROGRESS_INDEX.items():
+        if idx < target_idx:
+            at = artifact_type_for_node(node)
+            if at is not None:
+                prior_artifact_types.add(at)
+
+    if not prior_artifact_types:
+        return
+
+    result = await db.execute(
+        select(ProjectArtifact)
+        .where(
+            ProjectArtifact.run_id == source_run_id,
+            ProjectArtifact.artifact_type.in_(prior_artifact_types),
+        )
+        .order_by(ProjectArtifact.artifact_type.asc(), ProjectArtifact.version.asc())
+    )
+    source_artifacts = list(result.scalars().all())
+
+    if not source_artifacts:
+        return
+
+    # Rebase versions to avoid violating unique (project_id, artifact_type, version).
+    max_version_rows = await db.execute(
+        select(
+            ProjectArtifact.artifact_type,
+            func.max(ProjectArtifact.version).label("max_version"),
+        )
+        .where(
+            ProjectArtifact.project_id == project_id,
+            ProjectArtifact.artifact_type.in_(prior_artifact_types),
+        )
+        .group_by(ProjectArtifact.artifact_type)
+    )
+    next_version_by_type: dict[ArtifactType, int] = {}
+    for row in max_version_rows:
+        next_version_by_type[row.artifact_type] = int(row.max_version or 0) + 1
+
+    for art in source_artifacts:
+        next_version = next_version_by_type.get(art.artifact_type, 1)
+        next_version_by_type[art.artifact_type] = next_version + 1
+        new_artifact = ProjectArtifact(
+            project_id=project_id,
+            run_id=new_run_id,
+            artifact_type=art.artifact_type,
+            version=next_version,
+            content=art.content,
+            model_profile=art.model_profile,
+        )
+        db.add(new_artifact)
+
+
+def _is_run_terminal(run: ProjectRun) -> bool:
+    """Check if a run is in a terminal state."""
+    try:
+        node = NodeName(run.current_node)
+    except ValueError:
+        node = None
+    return (
+        run.status in _TERMINAL_RUN_STATUSES
+        or node in _TERMINAL_RUN_NODES
+    )
+
+
 @router.get(
     "/projects/{projectId}/runs/latest",
     operation_id="getLatestRun",
@@ -231,7 +313,9 @@ async def get_latest_run(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectRunDetailResponse:
-    result = await db.execute(select(Project.id).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project.id).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -264,16 +348,92 @@ async def create_run(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectRun:
     # Check project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if body and body.resume_from_node:
-        if body.resume_from_node not in ALL_NODE_NAMES:
-            raise HTTPException(status_code=422, detail=f"Unknown node: {body.resume_from_node}")
+    # Determine replay mode
+    replay_mode = body.replay_mode if body else None
+    resume_from_node = body.resume_from_node if body else None
 
-        resume_node = NodeName(body.resume_from_node)
+    if replay_mode is not None and not resume_from_node:
+        raise HTTPException(
+            status_code=422,
+            detail="resume_from_node is required when replay_mode is provided",
+        )
+
+    if resume_from_node and replay_mode is None:
+        previous_run = await _latest_run_for_project(project_id, db)
+        if previous_run is not None and _is_run_terminal(previous_run):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Terminal runs require explicit replay_mode: "
+                    "retry_failed or replay_from_node"
+                ),
+            )
+
+    # ── replay_from_node: Create NEW run at target node ──────────────────
+    if replay_mode == ReplayMode.REPLAY_FROM_NODE and resume_from_node:
+        if resume_from_node not in ALL_NODE_NAMES:
+            raise HTTPException(status_code=422, detail=f"Unknown node: {resume_from_node}")
+
+        target_node = NodeName(resume_from_node)
+        previous_run = await _latest_run_for_project(project_id, db)
+        if previous_run is None:
+            raise HTTPException(status_code=409, detail="No prior run exists to replay from")
+        if not _is_run_terminal(previous_run):
+            raise HTTPException(status_code=409, detail="replay_from_node requires a terminal run")
+        if not await _was_node_previously_reached(previous_run, target_node, db):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Node {target_node} was not reached by the previous run",
+            )
+
+        new_run = ProjectRun(
+            project_id=project_id,
+            status=NODE_TO_PROJECT_STATUS[target_node],
+            current_node=target_node,
+            idempotency_key=idempotency_key,
+        )
+        db.add(new_run)
+        await db.flush()
+
+        # Copy artifacts from nodes before target
+        await _copy_artifacts_before_node(
+            db=db,
+            source_run_id=previous_run.id,
+            new_run_id=new_run.id,
+            project_id=project_id,
+            target_node=target_node,
+        )
+
+        project.status = NODE_TO_PROJECT_STATUS[target_node]
+        project.updated_at = datetime.now(tz=UTC)
+
+        await _record_run_event(
+            db=db,
+            project_id=project_id,
+            run_id=new_run.id,
+            event_type="orchestrator.run_replayed",
+            from_node=previous_run.current_node,
+            to_node=target_node,
+            outcome="replayed",
+        )
+        await db.commit()
+        await db.refresh(new_run)
+        background_tasks.add_task(_run_orchestrator_background, new_run.id)
+        return new_run
+
+    # ── retry_failed (existing behavior): Mutate existing run ────────────
+    if resume_from_node:
+        if resume_from_node not in ALL_NODE_NAMES:
+            raise HTTPException(status_code=422, detail=f"Unknown node: {resume_from_node}")
+
+        resume_node = NodeName(resume_from_node)
         previous_run = await _latest_run_for_project(project_id, db)
         if previous_run is None:
             raise HTTPException(status_code=409, detail="No prior run exists to resume from")
@@ -317,6 +477,7 @@ async def create_run(
         background_tasks.add_task(_run_orchestrator_background, previous_run.id)
         return previous_run
 
+    # ── Fresh run ────────────────────────────────────────────────────────
     # Idempotency: return existing run if key matches
     if idempotency_key:
         run_result = await db.execute(

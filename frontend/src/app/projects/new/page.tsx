@@ -1,16 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useCreateProject } from "@/lib/hooks";
 import { Breadcrumbs } from "@/components/breadcrumbs";
+import { DEFAULT_STACK, STACK_OPTIONS, validateStackHostability } from "@/types/stack";
+import type { StackJson } from "@/types/stack";
 
 export default function NewProjectPage() {
   const [prompt, setPrompt] = useState("");
   const [constraints, setConstraints] = useState("");
   const [constraintsError, setConstraintsError] = useState("");
+  const [stack, setStack] = useState<StackJson>({ ...DEFAULT_STACK });
+  const [hostError, setHostError] = useState<string | null>(null);
   const create = useCreateProject();
   const router = useRouter();
+
+  useEffect(() => {
+    setHostError(validateStackHostability(stack));
+  }, [stack]);
 
   function parseConstraints(): Record<string, unknown> | undefined {
     if (!constraints.trim()) return undefined;
@@ -24,14 +32,22 @@ export default function NewProjectPage() {
     }
   }
 
+  function updateStack<K extends keyof StackJson>(key: K, value: StackJson[K]) {
+    setStack((prev) => ({ ...prev, [key]: value }));
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || hostError) return;
 
     const parsedConstraints = constraints.trim() ? parseConstraints() : undefined;
     if (constraints.trim() && !parsedConstraints) return;
 
-    const project = await create.mutateAsync({ prompt: prompt.trim(), constraints: parsedConstraints });
+    const project = await create.mutateAsync({
+      prompt: prompt.trim(),
+      constraints: parsedConstraints,
+      stackJson: stack,
+    });
     router.push(`/projects/${project.id}`);
   }
 
@@ -66,6 +82,37 @@ export default function NewProjectPage() {
             </div>
           </div>
 
+          {/* Stack Configuration */}
+          <div>
+            <label className="block text-sm font-medium text-text-1 mb-2">
+              Stack Configuration
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              {(Object.keys(STACK_OPTIONS) as Array<keyof typeof STACK_OPTIONS>).map((key) => (
+                <div key={key}>
+                  <label className="block text-[10px] font-mono-display text-text-3 tracking-widest uppercase mb-1">
+                    {key.replace(/_/g, " ")}
+                  </label>
+                  <select
+                    value={stack[key]}
+                    onChange={(e) => updateStack(key, e.target.value as never)}
+                    className="w-full text-xs"
+                    disabled={key === "hosting_frontend"}
+                  >
+                    {STACK_OPTIONS[key].map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+            {hostError && (
+              <p className="text-xs text-error mt-2">{hostError}</p>
+            )}
+          </div>
+
           {/* Constraints */}
           <div>
             <label className="block text-sm font-medium text-text-1 mb-2">
@@ -79,7 +126,7 @@ export default function NewProjectPage() {
                 setConstraintsError("");
               }}
               rows={4}
-              placeholder='{"framework": "nextjs", "database": "postgresql", "auth": "supabase"}'
+              placeholder='{"auth": "supabase", "styling": "tailwind"}'
               className="resize-y font-mono-display text-xs"
             />
             {constraintsError && (
@@ -98,13 +145,13 @@ export default function NewProjectPage() {
           <div className="flex items-center gap-4 pt-2">
             <button
               type="submit"
-              disabled={!prompt.trim() || create.isPending}
+              disabled={!prompt.trim() || create.isPending || !!hostError}
               className="btn btn-primary"
             >
               {create.isPending ? (
                 <>
                   <span className="w-4 h-4 border-2 border-surface-0 border-t-transparent rounded-full animate-spin" />
-                  Creating\u2026
+                  Creating&hellip;
                 </>
               ) : (
                 <>

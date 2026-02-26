@@ -3,11 +3,24 @@
 import { useState } from "react";
 import type { ProjectArtifact } from "@/types/domain";
 import { cn } from "@/lib/utils";
+import { isRecord, safeString, safeArray, safeRecord } from "@/lib/artifact-guards";
+import { RawJsonInspector } from "./raw-json-inspector";
 
 interface FileEntry {
   path: string;
   content?: string;
   language?: string;
+}
+
+function toFileEntry(raw: unknown): FileEntry | null {
+  if (!isRecord(raw)) return null;
+  const path = safeString(raw.path) ?? safeString(raw.file_path) ?? safeString(raw.file);
+  if (!path) return null;
+  return {
+    path,
+    content: safeString(raw.content),
+    language: safeString(raw.language),
+  };
 }
 
 type TreeMap = Map<string, FileEntry | TreeMap>;
@@ -107,19 +120,19 @@ function TreeNode({
 }
 
 export function CodeViewer({ artifact }: { artifact: ProjectArtifact }) {
-  const c = artifact.content as Record<string, unknown>;
-  const files = (c.files ?? []) as FileEntry[];
-  const buildCmd = c.build_command as string | undefined;
-  const testCmd = c.test_command as string | undefined;
+  const c = safeRecord(artifact.content);
+  const files = c ? safeArray(c.files).map(toFileEntry).filter((f): f is FileEntry => f !== null) : [];
+  const buildCmd = c ? safeString(c.build_command) : undefined;
+  const testCmd = c ? safeString(c.test_command) : undefined;
 
   const [selected, setSelected] = useState<FileEntry | null>(files[0] ?? null);
 
+  if (!c) {
+    return <RawJsonInspector data={artifact.content} warning="Artifact content is not a valid object." />;
+  }
+
   if (files.length === 0) {
-    return (
-      <div className="animate-fade-in">
-        <pre className="text-xs">{JSON.stringify(artifact.content, null, 2)}</pre>
-      </div>
-    );
+    return <RawJsonInspector data={artifact.content} warning="No files found in code snapshot. Showing raw content." />;
   }
 
   const tree = buildTree(files);

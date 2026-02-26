@@ -1,57 +1,69 @@
 "use client";
 
 import type { ProjectArtifact } from "@/types/domain";
+import { isString, safeString, safeRecord } from "@/lib/artifact-guards";
+import { RawJsonInspector } from "./raw-json-inspector";
 
 export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
-  const c = artifact.content as Record<string, unknown>;
-  const status = (c.status ?? (c.live_url ? "success" : undefined)) as string | undefined;
-  const environment = (c.environment ?? undefined) as string | undefined;
-  const url = (c.live_url ?? c.url ?? undefined) as string | undefined;
-  const provider = (c.provider ?? (c.vercel ? "vercel" : undefined)) as string | undefined;
-  const providerPayload =
-    (c.provider_payload ??
-      c.provider_details ??
-      (c.vercel || c.supabase
-        ? {
-            vercel: c.vercel,
-            supabase: c.supabase,
-            health_check: c.health_check,
-            github_repo: c.github_repo,
-          }
-        : undefined)) as Record<string, unknown> | undefined;
+  const c = safeRecord(artifact.content);
+  if (!c) {
+    return <RawJsonInspector data={artifact.content} warning="Artifact content is not a valid object." />;
+  }
+
+  const status = safeString(c.status) ?? (safeString(c.live_url) ? "success" : undefined);
+  const environment = safeString(c.environment);
+  const url = safeString(c.live_url) ?? safeString(c.url);
+  const provider = safeString(c.provider) ?? (c.vercel ? "vercel" : undefined);
+
+  // Build provider payload safely, checking each field is a record or string
+  let providerPayload: Record<string, unknown> | undefined;
+  const rawPayload = c.provider_payload ?? c.provider_details;
+  if (rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)) {
+    providerPayload = rawPayload as Record<string, unknown>;
+  } else if (c.vercel || c.supabase) {
+    const composed: Record<string, unknown> = {};
+    if (c.vercel) composed.vercel = c.vercel;
+    if (c.supabase) composed.supabase = c.supabase;
+    if (c.health_check) composed.health_check = c.health_check;
+    if (c.github_repo) composed.github_repo = c.github_repo;
+    providerPayload = composed;
+  }
 
   const isLive = status === "success" || status === "deployed" || status === "live";
+  const hasContent = status || url;
 
   return (
     <div className="animate-fade-in space-y-6">
       {/* Status banner */}
-      <div className={`glass p-6 ${isLive ? "glow-success" : ""}`}>
-        <div className="flex items-center gap-4">
-          <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-            isLive ? "bg-success-bg" : "bg-warning-bg"
-          }`}>
-            {isLive ? (
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" strokeWidth="2">
-                <path d="M22 12A10 10 0 1112 2" strokeLinecap="round" />
-                <path d="M22 2L12 12M22 2h-6M22 2v6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            ) : (
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 6v6l4 2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
-          </div>
-          <div>
-            <div className="font-mono-display text-xs text-text-3 tracking-widest uppercase mb-1">
-              Deployment Status
+      {status && (
+        <div className={`glass p-6 ${isLive ? "glow-success" : ""}`}>
+          <div className="flex items-center gap-4">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+              isLive ? "bg-success-bg" : "bg-warning-bg"
+            }`}>
+              {isLive ? (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" strokeWidth="2">
+                  <path d="M22 12A10 10 0 1112 2" strokeLinecap="round" />
+                  <path d="M22 2L12 12M22 2h-6M22 2v6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
             </div>
-            <div className={`text-lg font-semibold ${isLive ? "text-success" : "text-warning"}`}>
-              {status ?? "Unknown"}
+            <div>
+              <div className="font-mono-display text-xs text-text-3 tracking-widest uppercase mb-1">
+                Deployment Status
+              </div>
+              <div className={`text-lg font-semibold ${isLive ? "text-success" : "text-warning"}`}>
+                {status}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Details grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -61,7 +73,7 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
             <div className="text-sm text-text-0 font-medium">{environment}</div>
           </div>
         )}
-        {provider && (
+        {provider && isString(provider) && (
           <div className="glass p-5">
             <div className="font-mono-display text-[10px] text-text-3 tracking-widest uppercase mb-2">Provider</div>
             <div className="text-sm text-text-0 font-medium">{provider}</div>
@@ -98,8 +110,8 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
       )}
 
       {/* Fallback if no structured data */}
-      {!status && !url && (
-        <pre className="text-xs">{JSON.stringify(artifact.content, null, 2)}</pre>
+      {!hasContent && (
+        <RawJsonInspector data={artifact.content} warning="No recognized deployment fields found. Showing raw content." />
       )}
     </div>
   );

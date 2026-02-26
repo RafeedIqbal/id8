@@ -32,6 +32,7 @@ Add missing lifecycle controls and clean up artifact UX so operators can safely 
   - Replay from this step
   - Disabled state + reason tooltip when not allowed
 - [ ] Record audit events for operator-triggered replay actions.
+- Timeline should update properly with failure and successes
 
 ### 2. Artifacts tab becomes a left-nav dropdown
 - [ ] Replace single "Artifacts" link in project sidebar with a collapsible group.
