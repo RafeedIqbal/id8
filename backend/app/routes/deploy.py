@@ -12,8 +12,9 @@ from app.db import async_session, get_db
 from app.dependencies.idempotency import get_idempotency_key
 from app.models.approval_event import ApprovalEvent
 from app.models.deployment_record import DeploymentRecord
-from app.models.enums import ApprovalStage, ProjectStatus
+from app.models.enums import ApprovalStage, ArtifactType, ProjectStatus
 from app.models.project import Project
+from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
 from app.observability import emit_audit_event
 from app.orchestrator import NodeName, run_orchestrator
@@ -46,14 +47,53 @@ async def deploy_project(
     body: DeployRequest | None = None,
     idempotency_key: str | None = Depends(get_idempotency_key),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> DeploymentRecordResponse:
     # 1. Verify project exists.
-    result = await db.execute(
+    project_result = await db.execute(
         select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
     )
-    project = result.scalar_one_or_none()
+    project = project_result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    requested_target = body.target if body is not None else "production"
+    if requested_target != "production":
+        raise HTTPException(status_code=422, detail="Only target='production' is supported")
+
+    selected_artifact_id: str | None = None
+    if body is not None and body.artifact_id is not None:
+        artifact_result = await db.execute(
+            select(ProjectArtifact).where(
+                ProjectArtifact.id == body.artifact_id,
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.CODE_SNAPSHOT,
+            )
+        )
+        artifact = artifact_result.scalar_one_or_none()
+        if artifact is None:
+            raise HTTPException(
+                status_code=422,
+                detail="artifact_id is not a valid code_snapshot artifact for this project",
+            )
+        selected_artifact_id = str(artifact.id)
+
+    if idempotency_key:
+        key_result = await db.execute(
+            select(DeploymentRecord)
+            .where(
+                DeploymentRecord.provider_payload["idempotency_key"].astext == idempotency_key
+            )
+            .order_by(DeploymentRecord.created_at.desc())
+            .limit(1)
+        )
+        existing_key_record = key_result.scalar_one_or_none()
+        if existing_key_record is not None:
+            if existing_key_record.project_id != project_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key already used for a different project",
+                )
+            return DeploymentRecordResponse.model_validate(existing_key_record)
 
     # 2. Verify project is in deploy_ready status.
     if project.status != ProjectStatus.DEPLOY_READY:
@@ -63,27 +103,27 @@ async def deploy_project(
         )
 
     # 3. Verify deploy approval exists.
-    result = await db.execute(
+    approval_result = await db.execute(
         select(ApprovalEvent).where(
             ApprovalEvent.project_id == project_id,
             ApprovalEvent.stage == ApprovalStage.DEPLOY,
             ApprovalEvent.decision == "approved",
         )
     )
-    if not result.scalar_one_or_none():
+    if not approval_result.scalar_one_or_none():
         raise HTTPException(
             status_code=409,
             detail="A 'deploy' approval event is required before deployment",
         )
 
     # 4. Find the active run parked at WaitDeployApproval.
-    result = await db.execute(
+    run_result = await db.execute(
         select(ProjectRun)
         .where(ProjectRun.project_id == project_id)
         .order_by(ProjectRun.created_at.desc())
         .limit(1)
     )
-    run = result.scalar_one_or_none()
+    run = run_result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=409, detail="No active run for this project")
 
@@ -97,7 +137,7 @@ async def deploy_project(
         )
 
     # 5. Create a queued DeploymentRecord (idempotent — skip if already queued).
-    result = await db.execute(
+    record_result = await db.execute(
         select(DeploymentRecord)
         .where(
             DeploymentRecord.run_id == run.id,
@@ -106,15 +146,21 @@ async def deploy_project(
         )
         .limit(1)
     )
-    existing_record = result.scalar_one_or_none()
+    existing_record = record_result.scalar_one_or_none()
 
     if existing_record is None:
+        provider_payload: dict[str, Any] = {"requested_target": requested_target}
+        if selected_artifact_id is not None:
+            provider_payload["artifact_id"] = selected_artifact_id
+        if idempotency_key:
+            provider_payload["idempotency_key"] = idempotency_key
+
         record = DeploymentRecord(
             project_id=project_id,
             run_id=run.id,
             environment="production",
             status="queued",
-            provider_payload={},
+            provider_payload=provider_payload,
         )
         db.add(record)
         await db.flush()

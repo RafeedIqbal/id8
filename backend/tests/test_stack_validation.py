@@ -18,7 +18,7 @@ from app.schemas.stack import DEFAULT_STACK, StackJson
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)

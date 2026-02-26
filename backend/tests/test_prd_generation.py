@@ -18,7 +18,6 @@ from app.llm.client import LlmResponse, TokenUsage
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ModelProfile, ProjectStatus
 from app.models.project import Project
-from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
 from app.models.user import User
 from app.orchestrator.base import RunContext
@@ -28,7 +27,7 @@ from app.schemas.prd import PrdContent
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)

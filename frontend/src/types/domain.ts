@@ -119,16 +119,17 @@ export interface ApprovalRequest {
   stage: ApprovalStage;
   decision: "approved" | "rejected";
   notes?: string;
+  artifactId?: string;
 }
 
 export interface LlmRoutingPolicy {
-  planningReasoning: "gemini-3.1-pro-preview";
-  toolHeavyOrchestration: "gemini-3.1-pro-preview-customtools";
+  planningReasoning: "gemini-2.5-pro";
+  toolHeavyOrchestration: "gemini-2.5-pro";
   fallback: "gemini-2.5-pro";
 }
 
 export const DEFAULT_LLM_ROUTING_POLICY: LlmRoutingPolicy = {
-  planningReasoning: "gemini-3.1-pro-preview",
-  toolHeavyOrchestration: "gemini-3.1-pro-preview-customtools",
+  planningReasoning: "gemini-2.5-pro",
+  toolHeavyOrchestration: "gemini-2.5-pro",
   fallback: "gemini-2.5-pro",
 };

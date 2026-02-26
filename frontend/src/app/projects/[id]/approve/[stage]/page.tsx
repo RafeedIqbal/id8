@@ -316,11 +316,14 @@ export default function ApprovalPage({
 
   const { data: artifactsData, isLoading } = useArtifacts(id);
 
-  // Get latest version of the relevant artifact
+  // Get selectable versions for the relevant artifact type.
   const relevantArtifacts = (artifactsData?.items ?? [])
     .filter((a) => a.artifactType === artifactType)
     .sort((a, b) => b.version - a.version);
-  const artifact = relevantArtifacts[0];
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string>("");
+  const artifact =
+    relevantArtifacts.find((candidate) => candidate.id === selectedArtifactId) ??
+    relevantArtifacts[0];
 
   // If deploy approval, also show security report
   const securityArtifact = approvalStage === "deploy"
@@ -362,6 +365,23 @@ export default function ApprovalPage({
                       v{artifact.version} &middot; {formatDateTime(artifact.createdAt)}
                     </div>
                   </div>
+                  {relevantArtifacts.length > 1 && (
+                    <div className="min-w-[210px]">
+                      <label className="block text-[10px] font-mono-display text-text-3 tracking-wider uppercase mb-1">
+                        Version
+                      </label>
+                      <select
+                        value={artifact.id}
+                        onChange={(e) => setSelectedArtifactId(e.target.value)}
+                      >
+                        {relevantArtifacts.map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>
+                            v{candidate.version} · {formatDateTime(candidate.createdAt)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 {artifactType === "prd" && <PrdViewer artifact={artifact} />}
@@ -394,7 +414,11 @@ export default function ApprovalPage({
 
           {/* Right: Decision panel + extras */}
           <div className="space-y-4">
-            <ApprovalDecisionPanel projectId={id} stage={approvalStage} />
+            <ApprovalDecisionPanel
+              projectId={id}
+              stage={approvalStage}
+              artifactId={artifact?.id}
+            />
 
             {/* Show design tools panel on design approval */}
             {approvalStage === "design" && (

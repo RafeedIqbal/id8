@@ -443,8 +443,9 @@ components:
             - rejected
         notes:
           type: string
-        stitch_auth:
-          $ref: '#/components/schemas/StitchAuthPayload'
+        artifact_id:
+          type: string
+          format: uuid
       required:
         - stage
         - decision

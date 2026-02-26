@@ -31,7 +31,7 @@ from app.models.user import User
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
@@ -577,6 +577,22 @@ class TestGenerateDesign:
         data = resp.json()
         assert data["artifact"]["artifact_type"] == "design_spec"
 
+    @pytest.mark.asyncio
+    async def test_idempotency_key_returns_same_pending_artifact(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_project.status = ProjectStatus.PRD_APPROVED
+        await db.flush()
+
+        body = {"provider": "stitch_mcp", "model_profile": "primary"}
+        headers = {"Idempotency-Key": "design-generate-key-1"}
+        first = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body, headers=headers)
+        second = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body, headers=headers)
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert first.json()["artifact"]["id"] == second.json()["artifact"]["id"]
+
 
 # ---------------------------------------------------------------------------
 # POST /v1/projects/{projectId}/design/feedback — submitDesignFeedback
@@ -805,6 +821,84 @@ class TestDeployProject:
         resp = await client.post(f"/v1/projects/{seed_project.id}/deploy")
         assert resp.status_code == 409
         assert "approval" in resp.json()["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_only_production_target_is_supported(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project
+    ) -> None:
+        seed_project.status = ProjectStatus.DEPLOY_READY
+        await db.flush()
+
+        resp = await client.post(f"/v1/projects/{seed_project.id}/deploy", json={"target": "staging"})
+        assert resp.status_code == 422
+        assert "target='production'" in resp.json()["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_returns_same_record(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun, seed_user: User
+    ) -> None:
+        seed_project.status = ProjectStatus.DEPLOY_READY
+        seed_run.current_node = "WaitDeployApproval"
+        approval = ApprovalEvent(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            stage=ApprovalStage.DEPLOY,
+            decision="approved",
+            created_by=seed_user.id,
+        )
+        db.add(approval)
+        await db.flush()
+
+        headers = {"Idempotency-Key": "deploy-idem-1"}
+        first = await client.post(f"/v1/projects/{seed_project.id}/deploy", headers=headers)
+        second = await client.post(f"/v1/projects/{seed_project.id}/deploy", headers=headers)
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert first.json()["id"] == second.json()["id"]
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_conflict_across_projects(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun, seed_user: User
+    ) -> None:
+        seed_project.status = ProjectStatus.DEPLOY_READY
+        seed_run.current_node = "WaitDeployApproval"
+        first_approval = ApprovalEvent(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            stage=ApprovalStage.DEPLOY,
+            decision="approved",
+            created_by=seed_user.id,
+        )
+        db.add(first_approval)
+
+        other_project = Project(owner_user_id=seed_user.id, initial_prompt="Deploy project two")
+        db.add(other_project)
+        await db.flush()
+        other_project.status = ProjectStatus.DEPLOY_READY
+        other_run = ProjectRun(
+            project_id=other_project.id,
+            status=ProjectStatus.DEPLOY_READY,
+            current_node="WaitDeployApproval",
+        )
+        db.add(other_run)
+        await db.flush()
+        second_approval = ApprovalEvent(
+            project_id=other_project.id,
+            run_id=other_run.id,
+            stage=ApprovalStage.DEPLOY,
+            decision="approved",
+            created_by=seed_user.id,
+        )
+        db.add(second_approval)
+        await db.flush()
+
+        headers = {"Idempotency-Key": "deploy-idem-cross-project"}
+        first = await client.post(f"/v1/projects/{seed_project.id}/deploy", headers=headers)
+        second = await client.post(f"/v1/projects/{other_project.id}/deploy", headers=headers)
+
+        assert first.status_code == 202
+        assert second.status_code == 409
 
 
 # ---------------------------------------------------------------------------

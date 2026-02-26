@@ -27,7 +27,7 @@ from app.schemas.code_snapshot import CodeFile, CodeSnapshotContent
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
@@ -1006,8 +1006,16 @@ class TestCodeGenerationPromptTemplates:
             },
             chunk="frontend",
             generated_files=[
-                {"path": "frontend/src/App.jsx", "content": "export default function App() {}", "language": "javascript"},
-                {"path": "frontend/src/main.jsx", "content": "import App from './App';", "language": "javascript"},
+                {
+                    "path": "frontend/src/App.jsx",
+                    "content": "export default function App() {}",
+                    "language": "javascript",
+                },
+                {
+                    "path": "frontend/src/main.jsx",
+                    "content": "import App from './App';",
+                    "language": "javascript",
+                },
             ],
         )
         assert "current file path inventory" in user.lower()

@@ -13,8 +13,8 @@ from app.models.enums import ModelProfile
 # ---------------------------------------------------------------------------
 
 MODEL_MAP: dict[ModelProfile, str] = {
-    ModelProfile.PRIMARY: "gemini-3.1-pro-preview",
-    ModelProfile.CUSTOMTOOLS: "gemini-3.1-pro-preview-customtools",
+    ModelProfile.PRIMARY: "gemini-2.5-pro",
+    ModelProfile.CUSTOMTOOLS: "gemini-2.5-pro",
     ModelProfile.FALLBACK: "gemini-2.5-pro",
 }
 
@@ -23,15 +23,15 @@ MODEL_MAP: dict[ModelProfile, str] = {
 # ---------------------------------------------------------------------------
 
 NODE_PROFILE_MAP: dict[str, ModelProfile] = {
-    # Non-design generation nodes default to Gemini 2.5 Pro for now.
-    "GeneratePRD": ModelProfile.FALLBACK,
-    "GenerateTechPlan": ModelProfile.FALLBACK,
-    "WriteCode": ModelProfile.FALLBACK,
-    # Keep design on customtools profile.
+    # Planning/spec generation on primary quality profile.
+    "GeneratePRD": ModelProfile.PRIMARY,
+    "GenerateTechPlan": ModelProfile.PRIMARY,
+    # Code and design generation can leverage tool-aware profile.
+    "WriteCode": ModelProfile.CUSTOMTOOLS,
     "GenerateDesign": ModelProfile.CUSTOMTOOLS,
 }
 
-_DEFAULT_PROFILE = ModelProfile.FALLBACK
+_DEFAULT_PROFILE = ModelProfile.PRIMARY
 
 
 def resolve_model(profile: ModelProfile) -> str:
@@ -45,6 +45,6 @@ def resolve_model(profile: ModelProfile) -> str:
 def resolve_profile(node_name: str) -> ModelProfile:
     """Return the ``ModelProfile`` that *node_name* should use.
 
-    Falls back to ``fallback`` for nodes not explicitly mapped.
+    Falls back to ``primary`` for nodes not explicitly mapped.
     """
     return NODE_PROFILE_MAP.get(node_name, _DEFAULT_PROFILE)

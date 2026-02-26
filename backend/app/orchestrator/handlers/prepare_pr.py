@@ -198,7 +198,7 @@ async def _run_github_flow(
     # do not push new commits or create a duplicate PR.
     closed_pr = await _find_closed_pull_request(client, owner, repo_name, branch_name)
     if closed_pr is not None:
-        metadata = {
+        metadata: dict[str, Any] = {
             "github_repo_url": project.github_repo_url,
             "branch_name": branch_name,
             "pr_url": closed_pr.html_url,

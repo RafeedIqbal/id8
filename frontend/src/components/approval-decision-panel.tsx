@@ -9,9 +9,11 @@ import { useRouter } from "next/navigation";
 export function ApprovalDecisionPanel({
   projectId,
   stage,
+  artifactId,
 }: {
   projectId: string;
   stage: ApprovalStage;
+  artifactId?: string;
 }) {
   const [decision, setDecision] = useState<"approved" | "rejected" | null>(null);
   const [notes, setNotes] = useState("");
@@ -36,6 +38,7 @@ export function ApprovalDecisionPanel({
       stage,
       decision,
       notes: notes.trim() || undefined,
+      artifactId,
     });
     setSubmitted(true);
     setTimeout(() => router.push(`/projects/${projectId}`), 1200);

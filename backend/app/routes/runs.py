@@ -171,7 +171,7 @@ async def _was_node_previously_reached(
     if previous_node == NodeName.END_SUCCESS:
         return True
 
-    if previous_node not in {None, NodeName.END_FAILED}:
+    if previous_node is not None and previous_node != NodeName.END_FAILED:
         try:
             previous_idx = _NODE_PROGRESS_INDEX[previous_node]
             target_idx = _NODE_PROGRESS_INDEX[resume_node]

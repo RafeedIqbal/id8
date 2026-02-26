@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -31,6 +32,8 @@ _DEFAULT_ENDPOINT = "https://stitch.googleapis.com/mcp"
 _REQUEST_TIMEOUT = 120  # seconds
 _DEFAULT_STITCH_MODEL_ID = "GEMINI_3_FLASH"
 _DEFAULT_DEVICE_TYPE = "DESKTOP"
+_ALLOWED_STITCH_MODEL_IDS = {"GEMINI_3_PRO", "GEMINI_3_FLASH"}
+_ALLOWED_STITCH_DEVICE_TYPES = {"MOBILE", "DESKTOP", "TABLET", "AGNOSTIC"}
 
 # ---------------------------------------------------------------------------
 # Canonical Stitch MCP tool inventory
@@ -317,7 +320,15 @@ class StitchMcpProvider(DesignProvider):
 
 def _build_generation_prompt(prd_content: dict[str, Any], constraints: dict[str, Any]) -> str:
     """Translate an approved PRD into a Stitch-compatible generation prompt."""
-    parts = ["Generate UI screens for the following product:\n"]
+    parts = [
+        "Generate UI screens for a DESKTOP WEB APPLICATION.",
+        (
+            "Target device type: DESKTOP. Prioritize desktop-first information density, "
+            "navigation, and responsive web patterns."
+        ),
+        "",
+        "Product context:",
+    ]
 
     summary = prd_content.get("executive_summary", "")
     if summary:
@@ -345,7 +356,10 @@ def _build_generation_prompt(prd_content: dict[str, Any], constraints: dict[str,
 
 def _build_regeneration_prompt(previous: DesignOutput, feedback: DesignFeedback) -> str:
     """Build a targeted regeneration prompt incorporating feedback."""
-    parts = ["Regenerate the design with the following feedback:\n"]
+    parts = [
+        "Regenerate the desktop web app design with the following feedback:\n",
+        "Keep target device type as DESKTOP unless explicitly overridden.\n",
+    ]
     parts.append(f"Feedback: {feedback.feedback_text}\n")
 
     if feedback.target_screen_id:
@@ -365,22 +379,38 @@ def _build_regeneration_prompt(previous: DesignOutput, feedback: DesignFeedback)
 # ---------------------------------------------------------------------------
 
 def _project_name_from_prd(prd_content: dict[str, Any]) -> str:
+    for key in ("title", "project_title", "name"):
+        cleaned = _clean_project_title(str(prd_content.get(key, "")).strip())
+        if cleaned:
+            return cleaned
+
     summary = str(prd_content.get("executive_summary", "")).strip()
     if summary:
-        return summary[:80]
-    title = str(prd_content.get("title", "")).strip()
-    if title:
-        return title[:80]
-    return "id8-design"
+        first_line = summary.splitlines()[0].strip()
+        first_sentence = first_line.split(".", 1)[0].strip()
+        cleaned = _clean_project_title(first_sentence or first_line)
+        if cleaned:
+            return cleaned
+    return "id8 Design"
 
 
 def _extract_project_id(raw: dict[str, Any]) -> str:
-    return _extract_project_id_shallow(raw)
+    direct = _extract_project_id_shallow(raw)
+    if direct:
+        return direct
+
+    for candidate in _extract_projects(raw):
+        project_id = _extract_project_id_shallow(candidate)
+        if project_id:
+            return project_id
+
+    return ""
 
 
 def _extract_project_id_shallow(raw: dict[str, Any]) -> str:
     project = raw.get("project")
     data = raw.get("data")
+    structured = raw.get("structuredContent")
     candidates: list[Any] = [
         raw.get("projectId"),
         raw.get("project_id"),
@@ -391,6 +421,9 @@ def _extract_project_id_shallow(raw: dict[str, Any]) -> str:
         data.get("projectId") if isinstance(data, dict) else None,
         data.get("project_id") if isinstance(data, dict) else None,
         data.get("id") if isinstance(data, dict) else None,
+        structured.get("projectId") if isinstance(structured, dict) else None,
+        structured.get("project_id") if isinstance(structured, dict) else None,
+        structured.get("id") if isinstance(structured, dict) else None,
     ]
     for candidate in candidates:
         if not isinstance(candidate, str):
@@ -403,6 +436,7 @@ def _extract_project_id_shallow(raw: dict[str, Any]) -> str:
         raw.get("name"),
         project.get("name") if isinstance(project, dict) else None,
         data.get("name") if isinstance(data, dict) else None,
+        structured.get("name") if isinstance(structured, dict) else None,
     ]
     for candidate in resource_candidates:
         if not isinstance(candidate, str):
@@ -472,23 +506,51 @@ def _project_url(project_id: str) -> str:
 
 
 def _resolve_model_id(constraints: dict[str, Any]) -> str:
-    model_id = str(
+    raw_model_id = str(
         constraints.get("modelId")
         or constraints.get("model_id")
         or constraints.get("stitch_model_id")
         or _DEFAULT_STITCH_MODEL_ID
     ).strip()
-    return model_id or _DEFAULT_STITCH_MODEL_ID
+    return _normalize_model_id(raw_model_id)
 
 
 def _resolve_device_type(constraints: dict[str, Any]) -> str:
-    device_type = str(
+    raw_device_type = str(
         constraints.get("deviceType")
         or constraints.get("device_type")
         or constraints.get("stitch_device_type")
         or _DEFAULT_DEVICE_TYPE
     ).strip()
-    return device_type or _DEFAULT_DEVICE_TYPE
+    return _normalize_device_type(raw_device_type)
+
+
+def _normalize_model_id(raw_model_id: str) -> str:
+    value = re.sub(r"[^A-Z0-9]+", "_", raw_model_id.strip().upper())
+    value = re.sub(r"_+", "_", value).strip("_")
+    if value in _ALLOWED_STITCH_MODEL_IDS:
+        return value
+    if "FLASH" in value:
+        return "GEMINI_3_FLASH"
+    if "PRO" in value:
+        return "GEMINI_3_PRO"
+    return _DEFAULT_STITCH_MODEL_ID
+
+
+def _normalize_device_type(raw_device_type: str) -> str:
+    value = re.sub(r"[^A-Z0-9]+", "_", raw_device_type.strip().upper())
+    value = re.sub(r"_+", "_", value).strip("_")
+    if value in _ALLOWED_STITCH_DEVICE_TYPES:
+        return value
+    if "DESKTOP" in value or "WEB" in value or "BROWSER" in value:
+        return "DESKTOP"
+    if "MOBILE" in value or "PHONE" in value:
+        return "MOBILE"
+    if "TABLET" in value or "IPAD" in value:
+        return "TABLET"
+    if "AGNOSTIC" in value:
+        return "AGNOSTIC"
+    return _DEFAULT_DEVICE_TYPE
 
 
 def _selected_screen_ids(previous: DesignOutput, target_screen_id: str | None) -> list[str]:
@@ -509,17 +571,46 @@ def _selected_screen_ids(previous: DesignOutput, target_screen_id: str | None) -
 
 
 def _find_project_id_by_title(raw: dict[str, Any], title: str) -> str:
-    wanted = title.strip().casefold()
+    wanted = _normalize_title_for_match(title)
     if not wanted:
         return ""
 
     for project in _extract_projects(raw):
         project_title = _extract_project_title(project)
-        if project_title and project_title.strip().casefold() == wanted:
+        if project_title and _normalize_title_for_match(project_title) == wanted:
             project_id = _extract_project_id(project)
             if project_id:
                 return project_id
     return ""
+
+
+def _normalize_title_for_match(title: str) -> str:
+    text = title.strip().casefold()
+    if not text:
+        return ""
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.startswith("a "):
+        text = text[2:].strip()
+    elif text.startswith("an "):
+        text = text[3:].strip()
+    elif text.startswith("the "):
+        text = text[4:].strip()
+    return text
+
+
+def _clean_project_title(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    value = re.sub(r"\s+", " ", value)
+    value = value.strip(" .,:;|-_")
+    if len(value) <= 64:
+        return value
+    short = value[:64].rstrip()
+    if " " in short:
+        short = short.rsplit(" ", 1)[0]
+    return short.strip(" .,:;|-_")
 
 
 def _extract_project_title(raw: dict[str, Any]) -> str:

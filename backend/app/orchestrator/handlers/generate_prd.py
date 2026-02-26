@@ -160,7 +160,7 @@ def _normalize_constraints(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _parse_prd_response(content: str) -> tuple[dict | None, str | None]:
+def _parse_prd_response(content: str) -> tuple[dict[str, Any] | None, str | None]:
     """Try to parse the LLM response into a validated PRD dict.
 
     Returns ``(prd_dict, None)`` on success or ``(None, error_message)``

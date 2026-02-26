@@ -30,7 +30,12 @@ from app.design.provider_factory import (
     get_provider,
     regenerate_with_fallback,
 )
-from app.design.stitch_mcp import STITCH_TOOLS, StitchMcpProvider
+from app.design.stitch_mcp import (
+    STITCH_TOOLS,
+    StitchMcpProvider,
+    _find_project_id_by_title,
+    _project_name_from_prd,
+)
 from app.llm.client import LlmResponse, TokenUsage
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import (
@@ -47,7 +52,7 @@ from app.orchestrator.handlers.generate_design import GenerateDesignHandler
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
@@ -186,6 +191,19 @@ _STITCH_PROJECT_LIST_RESPONSE = {
             "title": "A todo application with auth and tagging.",
         }
     ]
+}
+
+_STITCH_CREATE_PROJECT_RESPONSE = {
+    "content": [
+        {
+            "type": "text",
+            "text": "{\"name\":\"projects/stitch-created-42\",\"title\":\"A todo application with auth and tagging.\"}",
+        }
+    ],
+    "structuredContent": {
+        "name": "projects/stitch-created-42",
+        "title": "A todo application with auth and tagging.",
+    },
 }
 
 
@@ -455,6 +473,79 @@ class TestStitchMcpProvider:
         assert call_kwargs["params"]["modelId"] == "GEMINI_3_FLASH"
         assert call_kwargs["params"]["selectedScreenIds"] == ["screen-1"]
         assert output.metadata["feedback_text"] == "Adjust header"
+
+    @pytest.mark.asyncio
+    async def test_generate_parses_create_project_structured_content(self) -> None:
+        provider = StitchMcpProvider()
+        auth = _sample_auth()
+
+        with patch.object(
+            provider,
+            "_call_stitch",
+            new_callable=AsyncMock,
+            side_effect=[{"projects": []}, _STITCH_CREATE_PROJECT_RESPONSE, _STITCH_RESPONSE],
+        ) as mock_call:
+            output = await provider.generate(
+                prd_content=_VALID_PRD,
+                constraints={},
+                auth=auth,
+            )
+
+        assert mock_call.await_count == 3
+        list_call = mock_call.await_args_list[0].kwargs
+        create_call = mock_call.await_args_list[1].kwargs
+        generate_call = mock_call.await_args_list[2].kwargs
+        assert list_call["tool"] == "list_projects"
+        assert create_call["tool"] == "create_project"
+        assert generate_call["tool"] == "generate_screen_from_text"
+        assert generate_call["params"]["projectId"] == "stitch-created-42"
+        assert output.metadata["stitch_project_id"] == "stitch-created-42"
+
+    @pytest.mark.asyncio
+    async def test_generate_normalizes_desktop_device_and_model(self) -> None:
+        provider = StitchMcpProvider()
+        auth = _sample_auth()
+
+        with patch.object(
+            provider,
+            "_call_stitch",
+            new_callable=AsyncMock,
+            side_effect=[_STITCH_PROJECT_LIST_RESPONSE, _STITCH_RESPONSE],
+        ) as mock_call:
+            await provider.generate(
+                prd_content=_VALID_PRD,
+                constraints={"deviceType": "desktop web app", "modelId": "gemini-3-pro"},
+                auth=auth,
+            )
+
+        generate_call = mock_call.await_args_list[1].kwargs
+        assert generate_call["params"]["deviceType"] == "DESKTOP"
+        assert generate_call["params"]["modelId"] == "GEMINI_3_PRO"
+        assert "DESKTOP WEB APPLICATION" in generate_call["params"]["prompt"]
+
+
+class TestStitchProjectNaming:
+    def test_project_name_from_summary_is_clean(self) -> None:
+        assert _project_name_from_prd(_VALID_PRD) == "A todo application with auth and tagging"
+
+    def test_project_name_prefers_explicit_title(self) -> None:
+        prd = {**_VALID_PRD, "title": "  Internal CRM Workspace v2.1  "}
+        assert _project_name_from_prd(prd) == "Internal CRM Workspace v2.1"
+
+    def test_project_match_ignores_articles_and_punctuation(self) -> None:
+        listed = {
+            "projects": [
+                {
+                    "name": "projects/stitch-project-1",
+                    "title": "A todo application with auth and tagging.",
+                }
+            ]
+        }
+        project_id = _find_project_id_by_title(
+            listed,
+            "todo application with auth and tagging",
+        )
+        assert project_id == "stitch-project-1"
 
 
 class TestStitchToolInventory:

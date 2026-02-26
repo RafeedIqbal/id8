@@ -15,7 +15,7 @@ from app.db import async_session
 from app.models.project_run import ProjectRun
 from app.models.retry_job import RetryJob
 from app.orchestrator.engine import run_orchestrator
-from app.orchestrator.nodes import NODE_REGISTRY, NodeName
+from app.orchestrator.nodes import NODE_REGISTRY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("id8.worker")
@@ -77,12 +77,15 @@ async def _process_retry_jobs(db: AsyncSession) -> int:
 async def main() -> None:
     logger.info("ID8 worker started — polling every %ds", POLL_INTERVAL_SECONDS)
     while True:
-        async with async_session() as db:
-            runs_processed = await _process_pending_runs(db)
-            retries_processed = await _process_retry_jobs(db)
+        try:
+            async with async_session() as db:
+                runs_processed = await _process_pending_runs(db)
+                retries_processed = await _process_retry_jobs(db)
 
-            if runs_processed or retries_processed:
-                logger.info("Cycle complete: runs=%d retries=%d", runs_processed, retries_processed)
+                if runs_processed or retries_processed:
+                    logger.info("Cycle complete: runs=%d retries=%d", runs_processed, retries_processed)
+        except Exception:
+            logger.exception("Worker poll cycle failed")
 
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 

@@ -153,7 +153,25 @@ async def generate_design(
         raise HTTPException(status_code=409, detail=f"Cannot generate design in status {project.status}")
 
     run = await _latest_run(db, project_id)
-    version = await _next_design_version(db, project_id)
+    if idempotency_key:
+        key_result = await db.execute(
+            select(ProjectArtifact)
+            .where(
+                ProjectArtifact.artifact_type == ArtifactType.DESIGN_SPEC,
+                ProjectArtifact.content["status"].astext == "pending",
+                ProjectArtifact.content["idempotency_key"].astext == idempotency_key,
+            )
+            .order_by(ProjectArtifact.created_at.desc())
+            .limit(1)
+        )
+        existing_key_artifact = key_result.scalar_one_or_none()
+        if existing_key_artifact is not None:
+            if existing_key_artifact.project_id != project_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key already used for a different project",
+                )
+            return {"artifact": ProjectArtifactResponse.model_validate(existing_key_artifact)}
 
     # Store provider/auth config in the pending artifact so the orchestrator
     # handler can retrieve it when the GenerateDesign node executes.
@@ -161,21 +179,40 @@ async def generate_design(
         "status": "pending",
         "provider": body.provider.value,
     }
+    if idempotency_key:
+        content["idempotency_key"] = idempotency_key
     if body.prompt_constraints:
         content["design_constraints"] = body.prompt_constraints
     env_auth = get_default_stitch_auth()
     if body.provider == DesignProvider.STITCH_MCP and env_auth is not None:
         content["stitch_auth_method"] = env_auth.auth_method.value
 
-    artifact = ProjectArtifact(
-        project_id=project_id,
-        run_id=run.id,
-        artifact_type=ArtifactType.DESIGN_SPEC,
-        version=version,
-        model_profile=body.model_profile,
-        content=content,
+    pending_result = await db.execute(
+        select(ProjectArtifact)
+        .where(
+            ProjectArtifact.project_id == project_id,
+            ProjectArtifact.run_id == run.id,
+            ProjectArtifact.artifact_type == ArtifactType.DESIGN_SPEC,
+            ProjectArtifact.content["status"].astext == "pending",
+        )
+        .order_by(ProjectArtifact.version.desc())
+        .limit(1)
     )
-    db.add(artifact)
+    artifact = pending_result.scalar_one_or_none()
+    if artifact is None:
+        version = await _next_design_version(db, project_id)
+        artifact = ProjectArtifact(
+            project_id=project_id,
+            run_id=run.id,
+            artifact_type=ArtifactType.DESIGN_SPEC,
+            version=version,
+            model_profile=body.model_profile,
+            content=content,
+        )
+        db.add(artifact)
+    else:
+        artifact.model_profile = body.model_profile
+        artifact.content = content
 
     # Transition to design_draft if not already
     if project.status != ProjectStatus.DESIGN_DRAFT:

@@ -419,7 +419,8 @@ export async function submitApproval(
   projectId: string,
   stage: ApprovalStage,
   decision: "approved" | "rejected",
-  notes?: string
+  notes?: string,
+  artifact_id?: string
 ): Promise<ApprovalEvent> {
   const data = await request<ApprovalEventWire>(`/v1/projects/${projectId}/approvals`, {
     method: "POST",
@@ -427,6 +428,7 @@ export async function submitApproval(
       stage,
       decision,
       notes,
+      artifact_id,
     }),
   });
   return toApprovalEvent(data);

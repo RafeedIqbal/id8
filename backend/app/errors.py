@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import ExceptionHandler
 
 
-def _error_body(code: str, message: str) -> dict:
+def _error_body(code: str, message: str) -> dict[str, dict[str, str]]:
     return {"error": {"code": code, "message": message}}
 
 
@@ -32,6 +35,9 @@ async def _generic_exception_handler(_request: Request, _exc: Exception) -> JSON
 
 
 def register_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(HTTPException, _http_exception_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(RequestValidationError, _validation_exception_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(Exception, _generic_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(HTTPException, cast(ExceptionHandler, _http_exception_handler))
+    app.add_exception_handler(
+        RequestValidationError,
+        cast(ExceptionHandler, _validation_exception_handler),
+    )
+    app.add_exception_handler(Exception, cast(ExceptionHandler, _generic_exception_handler))

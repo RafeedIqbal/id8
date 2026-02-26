@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { PIPELINE_NODES, NODE_LABELS } from "@/lib/constants";
 import type { RunTimelineEvent } from "@/types/domain";
 import { formatTime } from "@/lib/utils";
@@ -87,16 +88,27 @@ export function NodeTimeline({
   timeline = [],
   status,
   onReplay,
+  isActionPending = false,
 }: {
   currentNode?: string;
   timeline?: RunTimelineEvent[];
   status?: string;
   onReplay?: (node: string, mode: "retry_failed" | "replay_from_node") => void;
+  isActionPending?: boolean;
 }) {
   const isFailed = status === "failed";
   const isTerminal = status === "failed" || status === "deployed";
   const failedNode = inferFailureNode(currentNode, timeline, isFailed);
   const nodeStates = getNodeStates(currentNode, timeline, isFailed, failedNode);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedNode(null);
+  }, [currentNode, status, timeline.length]);
+
+  const defaultReplayMode: "retry_failed" | "replay_from_node" = isFailed
+    ? "retry_failed"
+    : "replay_from_node";
 
   // Hide EndFailed when we can map failure to a concrete pipeline node.
   const visibleNodes = PIPELINE_NODES.filter(
@@ -110,44 +122,26 @@ export function NodeTimeline({
       {visibleNodes.map((node) => {
         const info = nodeStates.get(node) ?? { state: "pending" as NodeState };
         const label = NODE_LABELS[node] ?? node;
-
-        // Determine which action button to show
-        let actionButton: React.ReactNode = null;
-        if (onReplay && node !== "EndSuccess" && node !== "EndFailed") {
-          if (info.state === "failed") {
-            actionButton = (
-              <button
-                onClick={() => onReplay(node, "retry_failed")}
-                className="text-[10px] font-mono-display text-error hover:text-error/80 border border-error/30 rounded px-1.5 py-0.5 hover:bg-error-bg transition-colors"
-              >
-                Retry
-              </button>
-            );
-          } else if (info.state === "completed" && isTerminal) {
-            actionButton = (
-              <button
-                onClick={() => onReplay(node, "replay_from_node")}
-                className="text-[10px] font-mono-display text-accent hover:text-accent/80 border border-accent/30 rounded px-1.5 py-0.5 hover:bg-accent-bg transition-colors"
-              >
-                Replay
-              </button>
-            );
-          } else if (info.state === "pending") {
-            actionButton = (
-              <span
-                className="text-[10px] font-mono-display text-text-3 cursor-default"
-                title="This node was not reached"
-              >
-                Not reached
-              </span>
-            );
-          }
-        }
+        const canOpenMenu = Boolean(onReplay) && isTerminal && node !== "EndSuccess" && node !== "EndFailed";
+        const canRestartFromNode = canOpenMenu && info.state !== "pending";
+        const menuOpen = selectedNode === node && canOpenMenu;
 
         return (
           <div key={node} className="timeline-node">
             <NodeDot state={info.state} />
-            <div className="flex items-baseline justify-between gap-2 min-h-[32px] pt-[6px]">
+            <button
+              type="button"
+              onClick={() => {
+                if (!canOpenMenu || isActionPending) return;
+                setSelectedNode((prev) => (prev === node ? null : node));
+              }}
+              disabled={!canOpenMenu || isActionPending}
+              className={cn(
+                "w-full flex items-baseline justify-between gap-2 min-h-[32px] pt-[6px] -ml-1 pl-1 rounded-md text-left transition-colors",
+                canOpenMenu && !isActionPending && "hover:bg-surface-2 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40",
+                (!canOpenMenu || isActionPending) && "cursor-default"
+              )}
+            >
               <span
                 className={cn(
                   "text-sm font-medium",
@@ -160,7 +154,11 @@ export function NodeTimeline({
                 {label}
               </span>
               <div className="flex items-center gap-2">
-                {actionButton}
+                {canOpenMenu && (
+                  <span className="text-[10px] font-mono-display text-text-3">
+                    {menuOpen ? "Options" : "Press to restart"}
+                  </span>
+                )}
                 {info.timestamp && (
                   <span className="font-mono-display text-[11px] text-text-3 tabular-nums">
                     {formatTime(info.timestamp)}
@@ -171,13 +169,45 @@ export function NodeTimeline({
                     Processing&hellip;
                   </span>
                 )}
-                {info.state === "failed" && !actionButton && (
+                {info.state === "failed" && !canOpenMenu && (
                   <span className="font-mono-display text-[11px] text-error">
                     Error
                   </span>
                 )}
               </div>
-            </div>
+            </button>
+            {menuOpen && (
+              <div className="mt-1 pl-1">
+                {canRestartFromNode ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!onReplay || isActionPending) return;
+                      onReplay(node, defaultReplayMode);
+                      setSelectedNode(null);
+                    }}
+                    disabled={isActionPending}
+                    className={cn(
+                      "text-[11px] font-mono-display rounded-md px-2 py-1 border transition-colors",
+                      isFailed
+                        ? "text-error border-error/30 hover:bg-error-bg"
+                        : "text-accent border-accent/30 hover:bg-accent-bg",
+                      isActionPending && "opacity-60 cursor-not-allowed"
+                    )}
+                  >
+                    {isActionPending
+                      ? "Restarting\u2026"
+                      : isFailed
+                        ? "Retry From This Step"
+                        : "Replay From This Step"}
+                  </button>
+                ) : (
+                  <div className="text-[11px] font-mono-display text-text-3">
+                    This step was not reached in the latest run.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })}

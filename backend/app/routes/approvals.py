@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session, get_db
 from app.models.approval_event import ApprovalEvent
-from app.models.enums import ApprovalStage, ProjectStatus
+from app.models.enums import ApprovalStage, ArtifactType, ProjectStatus
 from app.models.project import Project
+from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
 from app.observability import emit_audit_event
 from app.orchestrator import NodeName, run_orchestrator
@@ -40,6 +41,12 @@ _STAGE_TO_WAIT_NODE: dict[ApprovalStage, NodeName] = {
     ApprovalStage.TECH_PLAN: NodeName.WAIT_TECH_PLAN_APPROVAL,
     ApprovalStage.DEPLOY: NodeName.WAIT_DEPLOY_APPROVAL,
 }
+_STAGE_TO_ARTIFACT_TYPE: dict[ApprovalStage, ArtifactType] = {
+    ApprovalStage.PRD: ArtifactType.PRD,
+    ApprovalStage.DESIGN: ArtifactType.DESIGN_SPEC,
+    ApprovalStage.TECH_PLAN: ArtifactType.TECH_PLAN,
+    ApprovalStage.DEPLOY: ArtifactType.CODE_SNAPSHOT,
+}
 
 
 async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
@@ -65,10 +72,10 @@ async def submit_approval(
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalEvent:
     # Load project
-    result = await db.execute(
+    project_result = await db.execute(
         select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
     )
-    project = result.scalar_one_or_none()
+    project = project_result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -81,10 +88,10 @@ async def submit_approval(
         )
 
     # Find active run
-    result = await db.execute(
+    run_result = await db.execute(
         select(ProjectRun).where(ProjectRun.project_id == project_id).order_by(ProjectRun.created_at.desc()).limit(1)
     )
-    run = result.scalar_one_or_none()
+    run = run_result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=409, detail="No active run for this project")
     expected_wait_node = _STAGE_TO_WAIT_NODE[body.stage]
@@ -97,6 +104,24 @@ async def submit_approval(
             ),
         )
 
+    selected_artifact_id: str | None = None
+    if body.artifact_id is not None:
+        expected_artifact_type = _STAGE_TO_ARTIFACT_TYPE[body.stage]
+        artifact_result = await db.execute(
+            select(ProjectArtifact).where(
+                ProjectArtifact.id == body.artifact_id,
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == expected_artifact_type,
+            )
+        )
+        selected_artifact = artifact_result.scalar_one_or_none()
+        if selected_artifact is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"artifact_id is not a valid {expected_artifact_type} artifact for this project",
+            )
+        selected_artifact_id = str(selected_artifact.id)
+
     # Create approval event
     # TODO: resolve actor from auth context
     event = ApprovalEvent(
@@ -108,17 +133,21 @@ async def submit_approval(
         created_by=uuid.UUID("00000000-0000-0000-0000-000000000000"),
     )
     db.add(event)
+    audit_payload = {
+        "run_id": str(run.id),
+        "stage": str(body.stage),
+        "decision": body.decision,
+        "notes": body.notes or "",
+        "node": str(run.current_node),
+    }
+    if selected_artifact_id is not None:
+        audit_payload["artifact_id"] = selected_artifact_id
+
     await emit_audit_event(
         project_id,
         event.created_by,
         "approval.submitted",
-        {
-            "run_id": str(run.id),
-            "stage": str(body.stage),
-            "decision": body.decision,
-            "notes": body.notes or "",
-            "node": str(run.current_node),
-        },
+        audit_payload,
         db,
     )
 

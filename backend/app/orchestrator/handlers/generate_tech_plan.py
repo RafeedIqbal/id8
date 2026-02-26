@@ -189,7 +189,7 @@ async def _load_source_artifact_references(ctx: RunContext) -> dict[str, dict[st
     return refs
 
 
-def _parse_tech_plan_response(content: str) -> tuple[dict | None, str | None]:
+def _parse_tech_plan_response(content: str) -> tuple[dict[str, Any] | None, str | None]:
     """Try to parse the LLM response into a validated tech plan dict.
 
     Returns ``(plan_dict, None)`` on success or ``(None, error_message)``

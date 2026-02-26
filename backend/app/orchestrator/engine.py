@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit_event import AuditEvent
 from app.models.enums import ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
@@ -49,17 +50,20 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
     This function is safe to call multiple times for the same run — it is
     idempotent by design.
     """
-    # Load run
-    result = await db.execute(select(ProjectRun).where(ProjectRun.id == run_id))
-    run = result.scalar_one_or_none()
-    if run is None:
+    result = await db.execute(select(ProjectRun.id).where(ProjectRun.id == run_id))
+    if result.scalar_one_or_none() is None:
         logger.error("Run %s not found — aborting", run_id)
         return
 
-    logger.info("Orchestrator started for run=%s at node=%s", run_id, run.current_node)
+    logger.info("Orchestrator started for run=%s", run_id)
     workflow_payload: dict[str, Any] = {}
 
     while True:
+        run = await _lock_run_for_processing(run_id, db)
+        if run is None:
+            logger.info("Run %s is already being processed by another worker", run_id)
+            return
+
         node_name = run.current_node
         try:
             canonical_node = NodeName(node_name)
@@ -116,7 +120,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             continue
 
         # ---- Execute handler ----------------------------------------------
-        previous_artifacts = await _load_previous_artifacts(run_id, db)
+        previous_artifacts = await _load_previous_artifacts(run_id, run.project_id, db)
         ctx = RunContext(
             run_id=run_id,
             project_id=run.project_id,
@@ -508,6 +512,25 @@ async def _update_project_status(
         project.updated_at = datetime.now(tz=UTC)
 
 
+async def _lock_run_for_processing(
+    run_id: uuid.UUID,
+    db: AsyncSession,
+) -> ProjectRun | None:
+    """Lock and return ``ProjectRun`` for one-node-at-a-time execution.
+
+    PostgreSQL uses ``FOR UPDATE SKIP LOCKED`` so concurrent orchestrators
+    return ``None`` immediately instead of racing the same run.
+    """
+    stmt = select(ProjectRun).where(ProjectRun.id == run_id)
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name != "sqlite":
+        stmt = stmt.with_for_update(skip_locked=True)
+
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def _check_existing_artifact(
     run_id: uuid.UUID, node_name: str, db: AsyncSession
 ) -> ProjectArtifact | None:
@@ -545,15 +568,6 @@ async def _persist_artifact(
     if a_type is None:
         return
 
-    # Compute next version
-    version_result = await db.execute(
-        select(func.coalesce(func.max(ProjectArtifact.version), 0)).where(
-            ProjectArtifact.project_id == run.project_id,
-            ProjectArtifact.artifact_type == a_type,
-        )
-    )
-    next_version = version_result.scalar_one() + 1
-
     # Build content with optional LLM metadata
     content = _with_node_checkpoint(artifact_data, node_name)
     model_profile: ModelProfile | None = None
@@ -572,6 +586,30 @@ async def _persist_artifact(
             "latency_ms": llm_response.latency_ms,
             "estimated_cost_usd": estimated_cost_usd,
         }
+
+    pending_artifact = await _pending_artifact_for_run(run.id, a_type, db)
+    if pending_artifact is not None:
+        if model_profile is None:
+            model_profile = pending_artifact.model_profile
+        pending_artifact.content = content
+        pending_artifact.model_profile = model_profile
+        await db.flush()
+        logger.info(
+            "Updated pending artifact type=%s version=%d for run=%s",
+            a_type,
+            pending_artifact.version,
+            run.id,
+        )
+        return
+
+    # Compute next version
+    version_result = await db.execute(
+        select(func.coalesce(func.max(ProjectArtifact.version), 0)).where(
+            ProjectArtifact.project_id == run.project_id,
+            ProjectArtifact.artifact_type == a_type,
+        )
+    )
+    next_version = version_result.scalar_one() + 1
 
     artifact = ProjectArtifact(
         project_id=run.project_id,
@@ -594,6 +632,7 @@ def _with_node_checkpoint(artifact_data: dict[str, Any], node_name: str) -> dict
 
 async def _load_previous_artifacts(
     run_id: uuid.UUID,
+    project_id: uuid.UUID,
     db: AsyncSession,
 ) -> dict[str, Any]:
     result = await db.execute(
@@ -605,7 +644,80 @@ async def _load_previous_artifacts(
     for artifact in result.scalars():
         key = str(artifact.artifact_type)
         artifacts.setdefault(key, artifact.content)
+
+    selected_ids = await _selected_artifact_ids_for_run(project_id, run_id, db)
+    if selected_ids:
+        selected_result = await db.execute(
+            select(ProjectArtifact).where(ProjectArtifact.id.in_(set(selected_ids.values())))
+        )
+        selected_by_id = {artifact.id: artifact for artifact in selected_result.scalars()}
+        for artifact_key, artifact_id in selected_ids.items():
+            selected_artifact = selected_by_id.get(artifact_id)
+            if selected_artifact is not None:
+                artifacts[artifact_key] = selected_artifact.content
+
     return artifacts
+
+
+async def _pending_artifact_for_run(
+    run_id: uuid.UUID,
+    artifact_type: Any,
+    db: AsyncSession,
+) -> ProjectArtifact | None:
+    result = await db.execute(
+        select(ProjectArtifact)
+        .where(
+            ProjectArtifact.run_id == run_id,
+            ProjectArtifact.artifact_type == artifact_type,
+            ProjectArtifact.content["status"].astext == "pending",
+        )
+        .order_by(ProjectArtifact.version.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _artifact_key_for_stage(stage: str) -> str | None:
+    mapping = {
+        "prd": "prd",
+        "design": "design_spec",
+        "tech_plan": "tech_plan",
+        "deploy": "code_snapshot",
+    }
+    return mapping.get(stage.strip().lower())
+
+
+async def _selected_artifact_ids_for_run(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    db: AsyncSession,
+) -> dict[str, uuid.UUID]:
+    result = await db.execute(
+        select(AuditEvent)
+        .where(
+            AuditEvent.project_id == project_id,
+            AuditEvent.event_type == "approval.submitted",
+            AuditEvent.event_payload["run_id"].astext == str(run_id),
+            AuditEvent.event_payload["decision"].astext == "approved",
+        )
+        .order_by(AuditEvent.created_at.desc())
+    )
+
+    selected: dict[str, uuid.UUID] = {}
+    for event in result.scalars():
+        payload = event.event_payload if isinstance(event.event_payload, dict) else {}
+        stage_raw = payload.get("stage")
+        artifact_raw = payload.get("artifact_id")
+        if not isinstance(stage_raw, str) or not isinstance(artifact_raw, str):
+            continue
+        artifact_key = _artifact_key_for_stage(stage_raw)
+        if artifact_key is None or artifact_key in selected:
+            continue
+        try:
+            selected[artifact_key] = uuid.UUID(artifact_raw)
+        except ValueError:
+            continue
+    return selected
 
 
 def _default_outcome_for_skip(node_name: str) -> str:

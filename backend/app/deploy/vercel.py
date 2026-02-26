@@ -100,7 +100,7 @@ class VercelClient:
         method: str,
         path: str,
         *,
-        body: dict[str, Any] | None = None,
+        body: dict[str, Any] | list[dict[str, Any]] | None = None,
         params: dict[str, str] | None = None,
     ) -> Any:
         url = f"{_BASE_URL}{path}"

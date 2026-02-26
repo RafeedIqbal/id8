@@ -310,6 +310,7 @@ export default function ProjectDetailPage({
                 timeline={runDetail.timeline}
                 status={runDetail.status}
                 onReplay={isTerminal ? handleReplay : undefined}
+                isActionPending={createRun.isPending}
               />
             ) : (
               <p className="text-sm text-text-3 text-center py-4">

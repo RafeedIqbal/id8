@@ -106,8 +106,8 @@ export function useArtifacts(projectId: string, opts?: { refetchInterval?: numbe
 export function useSubmitApproval(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { stage: ApprovalStage; decision: "approved" | "rejected"; notes?: string }) =>
-      api.submitApproval(projectId, vars.stage, vars.decision, vars.notes),
+    mutationFn: (vars: { stage: ApprovalStage; decision: "approved" | "rejected"; notes?: string; artifactId?: string }) =>
+      api.submitApproval(projectId, vars.stage, vars.decision, vars.notes, vars.artifactId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["latestRun", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });

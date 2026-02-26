@@ -49,7 +49,7 @@ from app.schemas.security_report import SecurityFinding
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
@@ -406,7 +406,11 @@ async def test_scenario_2_stitch_iteration_loop(
             "design_spec": {"status": "pending", "provider": "stitch_mcp"},
         },
     )
-    auth_result = await handler.execute(auth_ctx)
+    with patch(
+        "app.orchestrator.handlers.generate_design.get_default_stitch_auth",
+        return_value=None,
+    ):
+        auth_result = await handler.execute(auth_ctx)
     assert auth_result.outcome == "failure"
     assert auth_result.artifact_data is not None
     assert auth_result.artifact_data["error_type"] == "stitch_auth_required"
@@ -520,8 +524,8 @@ async def test_scenario_3_stitch_outage_fallback(
 @pytest.mark.asyncio
 async def test_scenario_4_model_routing() -> None:
     """Scenario 4: profile routing and fallback model only on retry conditions."""
-    assert resolve_model(resolve_profile("GeneratePRD")) == "gemini-3.1-pro-preview"
-    assert resolve_model(resolve_profile("WriteCode")) == "gemini-3.1-pro-preview-customtools"
+    assert resolve_model(resolve_profile("GeneratePRD")) == "gemini-2.5-pro"
+    assert resolve_model(resolve_profile("WriteCode")) == "gemini-2.5-pro"
 
     retry_models: list[str] = []
 
@@ -540,10 +544,7 @@ async def test_scenario_4_model_routing() -> None:
             prompt="Generate a PRD",
         )
 
-    assert retry_models[0:2] == [
-        "gemini-3.1-pro-preview",
-        "gemini-3.1-pro-preview",
-    ]
+    assert retry_models[0:2] == ["gemini-2.5-pro", "gemini-2.5-pro"]
     assert retry_models[2] == "gemini-2.5-pro"
     assert retry_result.profile_used == ModelProfile.FALLBACK
 
@@ -562,7 +563,7 @@ async def test_scenario_4_model_routing() -> None:
             prompt="Generate another PRD",
         )
 
-    assert primary_models == ["gemini-3.1-pro-preview"]
+    assert primary_models == ["gemini-2.5-pro"]
     assert primary_result.profile_used == ModelProfile.PRIMARY
 
 

@@ -25,10 +25,18 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
         "failure": NodeName.END_FAILED,
         "failed": NodeName.END_FAILED,
     },
-    NodeName.SECURITY_GATE: {"passed": NodeName.PREPARE_PR, "failed": NodeName.WRITE_CODE, "failure": NodeName.END_FAILED},
+    NodeName.SECURITY_GATE: {
+        "passed": NodeName.PREPARE_PR,
+        "failed": NodeName.WRITE_CODE,
+        "failure": NodeName.END_FAILED,
+    },
     NodeName.PREPARE_PR: {"success": NodeName.WAIT_DEPLOY_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_DEPLOY_APPROVAL: {"approved": NodeName.DEPLOY_PRODUCTION, "rejected": NodeName.END_FAILED},
-    NodeName.DEPLOY_PRODUCTION: {"passed": NodeName.END_SUCCESS, "failed": NodeName.END_FAILED, "failure": NodeName.END_FAILED},
+    NodeName.DEPLOY_PRODUCTION: {
+        "passed": NodeName.END_SUCCESS,
+        "failed": NodeName.END_FAILED,
+        "failure": NodeName.END_FAILED,
+    },
 }
 
 

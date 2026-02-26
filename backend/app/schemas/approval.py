@@ -13,6 +13,7 @@ class ApprovalRequest(BaseModel):
     stage: ApprovalStage
     decision: Literal["approved", "rejected"]
     notes: str | None = None
+    artifact_id: uuid.UUID | None = None
 
 
 class ApprovalEvent(BaseModel):

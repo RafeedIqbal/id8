@@ -37,7 +37,7 @@ from app.security.secret_scan import _scan_file, run_secret_scan
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://id8:id8@localhost:5432/id8",
+    "postgresql+asyncpg://id8:id8@localhost:5432/id8_test",
 )
 
 _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
@@ -234,11 +234,46 @@ class TestSecuritySchemas:
 
     def test_build_summary_counts_correctly(self) -> None:
         findings = [
-            SecurityFinding(rule_id="A", severity="critical", file_path="f", line_number=1, message="m", remediation="r"),
-            SecurityFinding(rule_id="B", severity="critical", file_path="f", line_number=2, message="m", remediation="r"),
-            SecurityFinding(rule_id="C", severity="high", file_path="f", line_number=3, message="m", remediation="r"),
-            SecurityFinding(rule_id="D", severity="medium", file_path="f", line_number=4, message="m", remediation="r"),
-            SecurityFinding(rule_id="E", severity="low", file_path="f", line_number=5, message="m", remediation="r"),
+            SecurityFinding(
+                rule_id="A",
+                severity="critical",
+                file_path="f",
+                line_number=1,
+                message="m",
+                remediation="r",
+            ),
+            SecurityFinding(
+                rule_id="B",
+                severity="critical",
+                file_path="f",
+                line_number=2,
+                message="m",
+                remediation="r",
+            ),
+            SecurityFinding(
+                rule_id="C",
+                severity="high",
+                file_path="f",
+                line_number=3,
+                message="m",
+                remediation="r",
+            ),
+            SecurityFinding(
+                rule_id="D",
+                severity="medium",
+                file_path="f",
+                line_number=4,
+                message="m",
+                remediation="r",
+            ),
+            SecurityFinding(
+                rule_id="E",
+                severity="low",
+                file_path="f",
+                line_number=5,
+                message="m",
+                remediation="r",
+            ),
         ]
         summary = _build_summary(findings)
         assert summary.critical == 2

@@ -15,7 +15,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -128,7 +128,7 @@ def _generate_github_app_jwt(app_id: str, private_key_pem: str) -> str:
     since PAT auth (the MVP default) does not need it.
     """
     try:
-        import jwt as _jwt  # PyJWT
+        import jwt as _jwt  # type: ignore[import-not-found]  # PyJWT
     except ImportError as exc:
         raise ImportError(
             "PyJWT[cryptography] is required for GitHub App authentication. "
@@ -141,7 +141,7 @@ def _generate_github_app_jwt(app_id: str, private_key_pem: str) -> str:
         "exp": now + 600,  # valid for 10 minutes
         "iss": app_id,
     }
-    return _jwt.encode(payload, private_key_pem, algorithm="RS256")
+    return str(_jwt.encode(payload, private_key_pem, algorithm="RS256"))
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ class GitHubClient:
 
     async def get_authenticated_user(self) -> dict[str, Any]:
         """Return the authenticated user's login and metadata."""
-        return await self._request("GET", "/user")  # type: ignore[return-value]
+        return cast(dict[str, Any], await self._request("GET", "/user"))
 
     # ------------------------------------------------------------------
     # Repository
@@ -275,7 +275,7 @@ class GitHubClient:
 
     async def get_repo(self, owner: str, repo: str) -> RepoInfo:
         """Fetch an existing repository."""
-        data: dict[str, Any] = await self._request("GET", f"/repos/{owner}/{repo}")  # type: ignore[assignment]
+        data = cast(dict[str, Any], await self._request("GET", f"/repos/{owner}/{repo}"))
         return _repo_from_json(data)
 
     async def create_repo(
@@ -297,7 +297,7 @@ class GitHubClient:
             "auto_init": True,
         }
         path = f"/orgs/{org}/repos" if org else "/user/repos"
-        data: dict[str, Any] = await self._request("POST", path, body=body)  # type: ignore[assignment]
+        data = cast(dict[str, Any], await self._request("POST", path, body=body))
         return _repo_from_json(data)
 
     # ------------------------------------------------------------------
@@ -306,9 +306,9 @@ class GitHubClient:
 
     async def get_branch(self, owner: str, repo: str, branch: str) -> BranchRef:
         """Return the branch ref for *branch*.  Raises GitHubNotFoundError if absent."""
-        data: dict[str, Any] = await self._request(
+        data = cast(dict[str, Any], await self._request(
             "GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"
-        )  # type: ignore[assignment]
+        ))
         sha: str = data["object"]["sha"]
         return BranchRef(name=branch, sha=sha)
 
@@ -321,15 +321,15 @@ class GitHubClient:
         exists (caller should treat this as idempotent success).
         """
         # Resolve base ref SHA first
-        base_ref: dict[str, Any] = await self._request(
+        base_ref = cast(dict[str, Any], await self._request(
             "GET", f"/repos/{owner}/{repo}/git/ref/heads/{base}"
-        )  # type: ignore[assignment]
+        ))
         base_sha: str = base_ref["object"]["sha"]
 
         body: dict[str, Any] = {"ref": f"refs/heads/{branch_name}", "sha": base_sha}
-        data: dict[str, Any] = await self._request(
+        data = cast(dict[str, Any], await self._request(
             "POST", f"/repos/{owner}/{repo}/git/refs", body=body
-        )  # type: ignore[assignment]
+        ))
         sha: str = data["object"]["sha"]
         return BranchRef(name=branch_name, sha=sha)
 
@@ -361,15 +361,15 @@ class GitHubClient:
             )
 
         # 1. Get the current HEAD commit for the branch.
-        ref_data: dict[str, Any] = await self._request(
+        ref_data = cast(dict[str, Any], await self._request(
             "GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"
-        )  # type: ignore[assignment]
+        ))
         head_commit_sha: str = ref_data["object"]["sha"]
 
         # 2. Get the tree SHA of the current HEAD commit.
-        commit_data: dict[str, Any] = await self._request(
+        commit_data = cast(dict[str, Any], await self._request(
             "GET", f"/repos/{owner}/{repo}/git/commits/{head_commit_sha}"
-        )  # type: ignore[assignment]
+        ))
         base_tree_sha: str = commit_data["tree"]["sha"]
 
         # 3. Create a blob for each file.
@@ -381,9 +381,9 @@ class GitHubClient:
                 "content": base64.b64encode(content.encode()).decode(),
                 "encoding": "base64",
             }
-            blob_data: dict[str, Any] = await self._request(
+            blob_data = cast(dict[str, Any], await self._request(
                 "POST", f"/repos/{owner}/{repo}/git/blobs", body=blob_body
-            )  # type: ignore[assignment]
+            ))
             tree_entries.append(
                 {
                     "path": path,
@@ -398,9 +398,9 @@ class GitHubClient:
             "base_tree": base_tree_sha,
             "tree": tree_entries,
         }
-        tree_data: dict[str, Any] = await self._request(
+        tree_data = cast(dict[str, Any], await self._request(
             "POST", f"/repos/{owner}/{repo}/git/trees", body=tree_body
-        )  # type: ignore[assignment]
+        ))
         new_tree_sha: str = tree_data["sha"]
 
         # 5. Create a commit.
@@ -409,9 +409,9 @@ class GitHubClient:
             "tree": new_tree_sha,
             "parents": [head_commit_sha],
         }
-        new_commit: dict[str, Any] = await self._request(
+        new_commit = cast(dict[str, Any], await self._request(
             "POST", f"/repos/{owner}/{repo}/git/commits", body=commit_body
-        )  # type: ignore[assignment]
+        ))
         new_commit_sha: str = new_commit["sha"]
 
         # 6. Update the branch ref to point to the new commit.
@@ -450,9 +450,9 @@ class GitHubClient:
         params: dict[str, str] = {"state": state, "per_page": "100"}
         if head:
             params["head"] = head
-        data: list[dict[str, Any]] = await self._request(
+        data = cast(list[dict[str, Any]], await self._request(
             "GET", f"/repos/{owner}/{repo}/pulls", params=params
-        )  # type: ignore[assignment]
+        ))
         return [_pr_from_json(item) for item in data]
 
     async def create_pull_request(
@@ -472,9 +472,9 @@ class GitHubClient:
             "head": head,
             "base": base,
         }
-        data: dict[str, Any] = await self._request(
+        data = cast(dict[str, Any], await self._request(
             "POST", f"/repos/{owner}/{repo}/pulls", body=pr_body
-        )  # type: ignore[assignment]
+        ))
         return _pr_from_json(data)
 
     # ------------------------------------------------------------------
@@ -484,11 +484,11 @@ class GitHubClient:
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[CheckRun]:
         """Return all check runs for *ref* (commit SHA or branch name)."""
         ref_escaped = quote(ref, safe="")
-        data: dict[str, Any] = await self._request(
+        data = cast(dict[str, Any], await self._request(
             "GET",
             f"/repos/{owner}/{repo}/commits/{ref_escaped}/check-runs",
             params={"per_page": "100"},
-        )  # type: ignore[assignment]
+        ))
         return [_check_run_from_json(item) for item in data.get("check_runs", [])]
 
     async def poll_checks(
@@ -560,9 +560,9 @@ class GitHubClient:
     ) -> MergeResult:
         """Merge *pr_number* using *method* (merge | squash | rebase)."""
         body: dict[str, Any] = {"merge_method": method}
-        data: dict[str, Any] = await self._request(
+        data = cast(dict[str, Any], await self._request(
             "PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", body=body
-        )  # type: ignore[assignment]
+        ))
         return MergeResult(
             sha=data.get("sha", ""),
             merged=bool(data.get("merged", False)),
@@ -642,8 +642,8 @@ def _compute_retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
 
     exponential_backoff = _BASE_BACKOFF * (2**attempt)
     if retry_after is None:
-        return exponential_backoff
-    return max(retry_after, exponential_backoff)
+        return float(exponential_backoff)
+    return float(max(retry_after, exponential_backoff))
 
 
 def _response_message(resp: httpx.Response) -> str:
