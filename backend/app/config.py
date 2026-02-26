@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # Google Gemini
     gemini_api_key: str = ""
     llm_pricing_json: str = ""
+    llm_request_timeout_seconds: float = 90.0
 
     # Supabase Management API (for provisioning generated-app projects)
     supabase_access_token: str = ""  # Personal access token for Management API
@@ -33,6 +34,12 @@ class Settings(BaseSettings):
 
     # Stitch MCP
     stitch_mcp_endpoint: str = ""
+    stitch_mcp_api_key: str = ""
+    stitch_mcp_oauth_token: str = ""
+    stitch_mcp_goog_user_project: str = ""
+    # OAuth aliases from Stitch docs / gcloud workflow
+    stitch_access_token: str = ""
+    google_cloud_project: str = ""
 
 
 settings = Settings()

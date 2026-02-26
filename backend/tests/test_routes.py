@@ -64,11 +64,15 @@ async def seed_user(db: AsyncSession) -> User:
     """Ensure a scaffold user exists, plus the hardcoded route scaffold owner."""
     # The approvals route hardcodes created_by to this UUID
     scaffold_owner_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
-    scaffold_owner = User(id=scaffold_owner_id, email="operator+scaffold@id8.local", role="operator")
-    db.add(scaffold_owner)
+    scaffold_owner = await db.get(User, scaffold_owner_id)
+    if scaffold_owner is None:
+        scaffold_owner = User(id=scaffold_owner_id, email="operator+scaffold@id8.local", role="operator")
+        db.add(scaffold_owner)
 
-    user = User(id=_SCAFFOLD_USER_ID, email="test-route@id8.local", role="operator")
-    db.add(user)
+    user = await db.get(User, _SCAFFOLD_USER_ID)
+    if user is None:
+        user = User(id=_SCAFFOLD_USER_ID, email="test-route@id8.local", role="operator")
+        db.add(user)
     await db.flush()
     return user
 
@@ -487,17 +491,13 @@ class TestGenerateDesign:
         body = {
             "provider": "stitch_mcp",
             "model_profile": "primary",
-            "stitch_auth": {
-                "auth_method": "api_key",
-                "api_key": "secret-api-key-123",
-            },
         }
         resp = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body)
         assert resp.status_code == 202
         data = resp.json()
         assert data["artifact"]["artifact_type"] == "design_spec"
         assert data["artifact"]["version"] == 1
-        assert data["artifact"]["content"]["stitch_auth_method"] == "api_key"
+        assert data["artifact"]["content"]["provider"] == "stitch_mcp"
         assert "stitch_auth" not in data["artifact"]["content"]
 
     @pytest.mark.asyncio

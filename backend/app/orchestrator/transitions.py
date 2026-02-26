@@ -10,21 +10,21 @@ from app.orchestrator.nodes import NodeName
 
 # Outcome keys: success, approved, rejected, passed, failed
 TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
-    NodeName.INGEST_PROMPT: {"success": NodeName.GENERATE_PRD},
-    NodeName.GENERATE_PRD: {"success": NodeName.WAIT_PRD_APPROVAL},
+    NodeName.INGEST_PROMPT: {"success": NodeName.GENERATE_PRD, "failure": NodeName.END_FAILED},
+    NodeName.GENERATE_PRD: {"success": NodeName.WAIT_PRD_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_PRD_APPROVAL: {"approved": NodeName.GENERATE_DESIGN, "rejected": NodeName.GENERATE_PRD},
     NodeName.GENERATE_DESIGN: {
         "success": NodeName.WAIT_DESIGN_APPROVAL,
         "failure": NodeName.END_FAILED,
     },
     NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.GENERATE_TECH_PLAN, "rejected": NodeName.GENERATE_DESIGN},
-    NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL},
+    NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_TECH_PLAN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_TECH_PLAN},
-    NodeName.WRITE_CODE: {"success": NodeName.SECURITY_GATE},
-    NodeName.SECURITY_GATE: {"passed": NodeName.PREPARE_PR, "failed": NodeName.WRITE_CODE},
-    NodeName.PREPARE_PR: {"success": NodeName.WAIT_DEPLOY_APPROVAL},
+    NodeName.WRITE_CODE: {"success": NodeName.SECURITY_GATE, "failure": NodeName.END_FAILED},
+    NodeName.SECURITY_GATE: {"passed": NodeName.PREPARE_PR, "failed": NodeName.WRITE_CODE, "failure": NodeName.END_FAILED},
+    NodeName.PREPARE_PR: {"success": NodeName.WAIT_DEPLOY_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_DEPLOY_APPROVAL: {"approved": NodeName.DEPLOY_PRODUCTION, "rejected": NodeName.END_FAILED},
-    NodeName.DEPLOY_PRODUCTION: {"passed": NodeName.END_SUCCESS, "failed": NodeName.END_FAILED},
+    NodeName.DEPLOY_PRODUCTION: {"passed": NodeName.END_SUCCESS, "failed": NodeName.END_FAILED, "failure": NodeName.END_FAILED},
 }
 
 

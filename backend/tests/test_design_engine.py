@@ -179,6 +179,13 @@ _STITCH_RESPONSE = {
     ]
 }
 
+_STITCH_PROJECT_RESPONSE = {
+    "project": {
+        "id": "stitch-project-1",
+        "name": "id8-design",
+    }
+}
+
 
 def _mock_llm_response(content: str = _VALID_DESIGN_JSON) -> LlmResponse:
     return LlmResponse(
@@ -400,7 +407,7 @@ class TestStitchMcpProvider:
             provider,
             "_call_stitch",
             new_callable=AsyncMock,
-            return_value=_STITCH_RESPONSE,
+            side_effect=[_STITCH_PROJECT_RESPONSE, _STITCH_RESPONSE],
         ) as mock_call:
             output = await provider.generate(
                 prd_content=_VALID_PRD,
@@ -408,7 +415,13 @@ class TestStitchMcpProvider:
                 auth=auth,
             )
 
-        mock_call.assert_called_once()
+        assert mock_call.await_count == 2
+        get_project_call = mock_call.await_args_list[0].kwargs
+        generate_call = mock_call.await_args_list[1].kwargs
+        assert get_project_call["tool"] == "get_project"
+        assert generate_call["tool"] == "generate_screen_from_text"
+        assert generate_call["params"]["project_id"] == "stitch-project-1"
+        assert generate_call["params"]["model_id"] == "gemini_3_flash"
         assert output.metadata["provider"] == "stitch_mcp"
         assert len(output.screens) == 1
         assert output.screens[0].name == "Home"
@@ -423,6 +436,7 @@ class TestStitchMcpProvider:
             target_screen_id="screen-1",
             target_component_id="comp-1",
         )
+        previous.metadata["stitch_project_id"] = "stitch-project-existing"
 
         with patch.object(
             provider,
@@ -433,8 +447,9 @@ class TestStitchMcpProvider:
             output = await provider.regenerate(previous=previous, feedback=feedback, auth=auth)
 
         call_kwargs = mock_call.call_args.kwargs
-        assert "screen_id" in call_kwargs["params"]
-        assert "component_id" in call_kwargs["params"]
+        assert call_kwargs["tool"] == "generate_screen_from_text"
+        assert call_kwargs["params"]["project_id"] == "stitch-project-existing"
+        assert call_kwargs["params"]["model_id"] == "gemini_3_flash"
         assert output.metadata["feedback_text"] == "Adjust header"
 
 

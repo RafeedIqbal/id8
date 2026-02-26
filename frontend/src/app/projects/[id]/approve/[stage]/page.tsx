@@ -2,14 +2,12 @@
 
 import { use, useMemo, useState } from "react";
 import { useArtifacts, useSubmitDesignFeedback } from "@/lib/hooks";
-import { getStitchAuthRequiredDetail } from "@/lib/api";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { ApprovalDecisionPanel } from "@/components/approval-decision-panel";
 import { APPROVAL_STAGE_LABELS, ARTIFACT_LABELS } from "@/lib/constants";
 import { DesignToolsPanel } from "@/components/design-tools-panel";
-import { StitchAuthPanel } from "@/components/stitch-auth-panel";
 import { formatDateTime } from "@/lib/utils";
-import type { ApprovalStage, ArtifactType, ProjectArtifact, StitchAuthPayload } from "@/types/domain";
+import type { ApprovalStage, ArtifactType, ProjectArtifact } from "@/types/domain";
 
 import { PrdViewer } from "@/components/artifact-viewers/prd-viewer";
 import { DesignViewer } from "@/components/artifact-viewers/design-viewer";
@@ -77,18 +75,15 @@ function DesignFeedbackPanel({
   const [selectedComponentId, setSelectedComponentId] = useState<string>("");
   const [feedbackText, setFeedbackText] = useState("");
   const [submitted, setSubmitted] = useState(false);
-  const [stitchAuth, setStitchAuth] = useState<StitchAuthPayload | undefined>(undefined);
 
   const screens = useMemo(() => extractDesignScreens(artifact), [artifact]);
   const selectedScreen = screens.find((screen) => screen.id === selectedScreenId);
   const components = selectedScreen?.components ?? [];
 
-  const stitchAuthDetail = getStitchAuthRequiredDetail(feedback.error);
   const errorText = feedback.isError ? (feedback.error as Error).message : "";
-  const needsStitchAuth =
-    Boolean(stitchAuthDetail) ||
-    errorText.toLowerCase().includes("stitch_auth_required") ||
-    errorText.toLowerCase().includes("stitch mcp credentials");
+  const needsStitchConfig =
+    errorText.toLowerCase().includes("stitch") ||
+    errorText.toLowerCase().includes("credentials");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -97,7 +92,6 @@ function DesignFeedbackPanel({
       feedbackText: feedbackText.trim(),
       targetScreenId: selectedScreenId || undefined,
       targetComponentId: selectedComponentId || undefined,
-      stitchAuth,
     });
     setSubmitted(true);
     setFeedbackText("");
@@ -175,30 +169,19 @@ function DesignFeedbackPanel({
 
       {feedback.isError && (
         <div className="text-xs text-error bg-error-bg border border-error-dim rounded-lg p-2.5">
-          {stitchAuthDetail?.message ?? errorText}
+          {errorText}
         </div>
       )}
 
-      {needsStitchAuth && (
+      {needsStitchConfig && (
         <div className="space-y-3">
-          {stitchAuthDetail?.instructions && stitchAuthDetail.instructions.length > 0 && (
-            <div className="text-xs text-text-2 bg-surface-2 border border-border-1 rounded-lg p-3">
-              <div className="font-medium text-text-1 mb-1.5">Setup Steps</div>
-              <ul className="list-disc pl-4 space-y-1">
-                {stitchAuthDetail.instructions.map((instruction) => (
-                  <li key={instruction}>{instruction}</li>
-                ))}
-              </ul>
-              {stitchAuthDetail.fallback_note && (
-                <p className="mt-2 text-text-3">{stitchAuthDetail.fallback_note}</p>
-              )}
-            </div>
-          )}
-          <StitchAuthPanel
-            onAuth={(payload) => {
-              setStitchAuth(payload);
-            }}
-          />
+          <div className="text-xs text-text-2 bg-surface-2 border border-border-1 rounded-lg p-3">
+            <div className="font-medium text-text-1 mb-1.5">Server Stitch setup</div>
+            <p>
+              Stitch credentials are env-only. Set <span className="font-mono-display">STITCH_MCP_API_KEY</span>
+              or OAuth env vars on backend, then restart API/worker.
+            </p>
+          </div>
         </div>
       )}
     </div>

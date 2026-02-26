@@ -5,6 +5,7 @@ Provides ``generate()`` for single-shot calls and
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Sequence
@@ -97,11 +98,18 @@ async def generate(
 
     start = time.monotonic()
     try:
-        response = await client.aio.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config=config,
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model_id,
+                contents=prompt,
+                config=config,
+            ),
+            timeout=max(0.1, float(settings.llm_request_timeout_seconds)),
         )
+    except TimeoutError as exc:
+        raise RetryableError(
+            f"Gemini request timed out after {settings.llm_request_timeout_seconds}s"
+        ) from exc
     except genai_errors.APIError as exc:
         _handle_api_error(exc)
         raise  # unreachable — _handle_api_error always raises

@@ -29,6 +29,7 @@ logger = logging.getLogger("id8.design.stitch_mcp")
 
 _DEFAULT_ENDPOINT = "https://stitch.googleapis.com/mcp"
 _REQUEST_TIMEOUT = 120  # seconds
+_DEFAULT_STITCH_MODEL_ID = "gemini_3_flash"
 
 # ---------------------------------------------------------------------------
 # Canonical Stitch MCP tool inventory
@@ -70,11 +71,19 @@ class StitchMcpProvider(DesignProvider):
         assert auth is not None  # ensured by _validate_auth
 
         prompt = _build_generation_prompt(prd_content, constraints)
+        project_id = await self._ensure_project_id(
+            auth=auth,
+            suggested_name=_project_name_from_prd(prd_content),
+        )
 
         start = time.monotonic()
         raw = await self._call_stitch(
             tool="generate_screen_from_text",
-            params={"prompt": prompt},
+            params={
+                "project_id": project_id,
+                "prompt": prompt,
+                "model_id": _DEFAULT_STITCH_MODEL_ID,
+            },
             auth=auth,
         )
         elapsed_ms = round((time.monotonic() - start) * 1000, 2)
@@ -85,6 +94,8 @@ class StitchMcpProvider(DesignProvider):
             "endpoint": _endpoint(),
             "generation_time_ms": elapsed_ms,
             "usable_tools": STITCH_TOOLS,
+            "stitch_project_id": project_id,
+            "stitch_model_id": _DEFAULT_STITCH_MODEL_ID,
             **auth.redacted_summary(),
         })
         return output
@@ -100,11 +111,17 @@ class StitchMcpProvider(DesignProvider):
 
         prompt = _build_regeneration_prompt(previous, feedback)
 
-        params: dict[str, Any] = {"prompt": prompt}
-        if feedback.target_screen_id:
-            params["screen_id"] = feedback.target_screen_id
-        if feedback.target_component_id:
-            params["component_id"] = feedback.target_component_id
+        existing_project_id = str(previous.metadata.get("stitch_project_id", "")).strip()
+        project_id = await self._ensure_project_id(
+            auth=auth,
+            suggested_name="id8-design",
+            existing_project_id=existing_project_id or None,
+        )
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "prompt": prompt,
+            "model_id": _DEFAULT_STITCH_MODEL_ID,
+        }
 
         start = time.monotonic()
         raw = await self._call_stitch(
@@ -121,6 +138,8 @@ class StitchMcpProvider(DesignProvider):
             "generation_time_ms": elapsed_ms,
             "feedback_text": feedback.feedback_text,
             "usable_tools": STITCH_TOOLS,
+            "stitch_project_id": project_id,
+            "stitch_model_id": _DEFAULT_STITCH_MODEL_ID,
             **auth.redacted_summary(),
         })
         return output
@@ -151,6 +170,7 @@ class StitchMcpProvider(DesignProvider):
         endpoint = _endpoint()
         headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json",
             **auth.build_headers(),
         }
         payload = {
@@ -201,7 +221,43 @@ class StitchMcpProvider(DesignProvider):
         result = body.get("result", body)
         if not isinstance(result, dict):
             raise StitchRuntimeError("Unexpected Stitch response shape")
+        if result.get("isError") is True:
+            raise StitchRuntimeError(f"Stitch MCP error: {_extract_error_text(result)}")
         return result
+
+    async def _ensure_project_id(
+        self,
+        *,
+        auth: StitchAuthContext,
+        suggested_name: str,
+        existing_project_id: str | None = None,
+    ) -> str:
+        """Return a valid Stitch project_id, creating one when needed."""
+        if existing_project_id:
+            return existing_project_id
+
+        try:
+            existing = await self._call_stitch(
+                tool="get_project",
+                params={"name": suggested_name},
+                auth=auth,
+            )
+            existing_id = _extract_project_id(existing)
+            if existing_id:
+                return existing_id
+        except StitchRuntimeError:
+            # Not found or unsupported lookup; fall through to create.
+            pass
+
+        created = await self._call_stitch(
+            tool="create_project",
+            params={"name": suggested_name},
+            auth=auth,
+        )
+        created_id = _extract_project_id(created)
+        if not created_id:
+            raise StitchRuntimeError("Stitch create_project did not return project_id")
+        return created_id
 
 
 # ---------------------------------------------------------------------------
@@ -257,17 +313,75 @@ def _build_regeneration_prompt(previous: DesignOutput, feedback: DesignFeedback)
 # Response parser
 # ---------------------------------------------------------------------------
 
+def _project_name_from_prd(prd_content: dict[str, Any]) -> str:
+    summary = str(prd_content.get("executive_summary", "")).strip()
+    if summary:
+        return summary[:80]
+    title = str(prd_content.get("title", "")).strip()
+    if title:
+        return title[:80]
+    return "id8-design"
+
+
+def _extract_project_id(raw: dict[str, Any]) -> str:
+    project = raw.get("project")
+    data = raw.get("data")
+    candidates: list[Any] = [
+        raw.get("project_id"),
+        raw.get("id"),
+        project.get("project_id") if isinstance(project, dict) else None,
+        project.get("id") if isinstance(project, dict) else None,
+        data.get("project_id") if isinstance(data, dict) else None,
+        data.get("id") if isinstance(data, dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _extract_error_text(raw: dict[str, Any]) -> str:
+    content = raw.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return "Unknown Stitch error"
+
+
 def _parse_stitch_response(raw: dict[str, Any]) -> DesignOutput:
     """Parse a Stitch MCP response into a ``DesignOutput``."""
     screens: list[Screen] = []
 
-    # Stitch may return screens under various keys
-    raw_screens = (
-        raw.get("screens")
-        or raw.get("content", {}).get("screens")
-        or raw.get("data", {}).get("screens")
-        or []
-    )
+    # Stitch may return screens under various keys/shapes.
+    raw_screens: Any = []
+    if isinstance(raw.get("screens"), list):
+        raw_screens = raw.get("screens", [])
+    elif isinstance(raw.get("content"), dict):
+        raw_screens = raw.get("content", {}).get("screens", [])
+    elif isinstance(raw.get("data"), dict):
+        raw_screens = raw.get("data", {}).get("screens", [])
+    elif isinstance(raw.get("content"), list):
+        for item in raw.get("content", []):
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict) and isinstance(parsed.get("screens"), list):
+                raw_screens = parsed.get("screens", [])
+                break
 
     if isinstance(raw_screens, list):
         for i, rs in enumerate(raw_screens):

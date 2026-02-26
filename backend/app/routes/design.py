@@ -9,13 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.dependencies.idempotency import get_idempotency_key
-from app.design.auth_cache import cache_stitch_auth, get_cached_stitch_auth
+from app.design.auth_resolver import get_default_stitch_auth, stitch_auth_configured
 from app.design.base import (
     DesignFeedback,
     DesignOutput,
     Screen,
     ScreenComponent,
-    StitchAuthContext,
     StitchAuthError,
 )
 from app.design.provider_factory import regenerate_with_fallback
@@ -26,15 +25,15 @@ from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
 from app.observability import emit_audit_event, emit_llm_usage_event
 from app.schemas.artifact import ArtifactResponse, ProjectArtifactResponse
-from app.schemas.design import DesignFeedbackRequest, DesignGenerateRequest, StitchAuthPayload
+from app.schemas.design import DesignFeedbackRequest, DesignGenerateRequest
 
 router = APIRouter(tags=["design"])
 
 _DESIGN_VALID_STATUSES = {
     ProjectStatus.PRD_APPROVED,
     ProjectStatus.DESIGN_DRAFT,
-    # Allow reconnect workflow after a failed run so the operator can
-    # attach Stitch credentials and then resume from GenerateDesign.
+    # Allow reconnect workflow after a failed run once server env
+    # credentials are fixed.
     ProjectStatus.FAILED,
 }
 
@@ -83,12 +82,6 @@ async def _latest_completed_design_artifact(
     return None
 
 
-def _auth_from_payload(payload: StitchAuthPayload | None) -> StitchAuthContext | None:
-    if payload is None:
-        return None
-    return StitchAuthContext.from_mapping(payload.model_dump(exclude_none=True))
-
-
 def _design_output_from_content(content: dict[str, Any]) -> DesignOutput:
     screens: list[Screen] = []
     raw_screens = content.get("screens", [])
@@ -134,6 +127,7 @@ async def list_design_tools() -> dict[str, Any]:
     return {
         "provider": DesignProvider.STITCH_MCP.value,
         "usable_tools": STITCH_TOOLS,
+        "stitch_auth_configured": stitch_auth_configured(),
     }
 
 
@@ -167,11 +161,9 @@ async def generate_design(
     }
     if body.prompt_constraints:
         content["design_constraints"] = body.prompt_constraints
-    if body.stitch_auth:
-        auth = _auth_from_payload(body.stitch_auth)
-        if auth is not None:
-            cache_stitch_auth(run.id, auth)
-            content["stitch_auth_method"] = auth.auth_method.value
+    env_auth = get_default_stitch_auth()
+    if body.provider == DesignProvider.STITCH_MCP and env_auth is not None:
+        content["stitch_auth_method"] = env_auth.auth_method.value
 
     artifact = ProjectArtifact(
         project_id=project_id,
@@ -232,11 +224,7 @@ async def submit_design_feedback(
     except ValueError:
         preferred_provider = DesignProvider.STITCH_MCP
 
-    auth = _auth_from_payload(body.stitch_auth)
-    if auth is not None:
-        cache_stitch_auth(run.id, auth)
-    elif preferred_provider == DesignProvider.STITCH_MCP:
-        auth = get_cached_stitch_auth(run.id)
+    auth = get_default_stitch_auth() if preferred_provider == DesignProvider.STITCH_MCP else None
 
     feedback = DesignFeedback(
         feedback_text=body.feedback_text,

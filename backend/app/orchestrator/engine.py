@@ -307,7 +307,9 @@ async def _advance(
         to_node=next_node,
         outcome=outcome,
     )
-    await db.flush()
+    # Commit each node transition as a checkpoint so external readers
+    # (API/UI/worker recovery) observe forward progress immediately.
+    await db.commit()
     logger.info("Run %s advanced to node=%s", run.id, next_node)
 
 

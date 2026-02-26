@@ -1,16 +1,16 @@
 "use client";
 
-import { use, useState } from "react";
+import { use } from "react";
 import Link from "next/link";
-import { useProject, useLatestRun, useArtifacts, useCreateRun, useGenerateDesign } from "@/lib/hooks";
+import { useProject, useLatestRun, useArtifacts, useCreateRun, useDesignTools } from "@/lib/hooks";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { NodeTimeline } from "@/components/node-timeline";
 import { ArtifactCard } from "@/components/artifact-card";
 import { EmptyState } from "@/components/empty-state";
-import { StitchAuthPanel } from "@/components/stitch-auth-panel";
+import { NODE_LABELS } from "@/lib/constants";
 import { formatDateTime, truncate } from "@/lib/utils";
-import type { ArtifactType, ApprovalStage, ProjectStatus, StitchAuthPayload } from "@/types/domain";
+import type { ArtifactType, ApprovalStage, ProjectStatus } from "@/types/domain";
 
 const ACTIVE_STATUSES: ProjectStatus[] = [
   "prd_draft", "design_draft", "tech_plan_draft", "codegen",
@@ -28,12 +28,23 @@ const TERMINAL_NODES = new Set(["EndSuccess", "EndFailed"]);
 
 function resolveResumeNode(
   currentNode: string | undefined,
-  timeline: { toNode: string; fromNode?: string }[] | undefined
+  timeline: { eventType: string; toNode: string; fromNode?: string }[] | undefined
 ): string | undefined {
   if (!currentNode) return undefined;
   if (!TERMINAL_NODES.has(currentNode)) return currentNode;
 
   const events = timeline ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (
+      event.eventType === "orchestrator.run_failed" &&
+      event.fromNode &&
+      !TERMINAL_NODES.has(event.fromNode)
+    ) {
+      return event.fromNode;
+    }
+  }
+
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event.fromNode && !TERMINAL_NODES.has(event.fromNode)) {
@@ -114,8 +125,6 @@ export default function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [stitchAuth, setStitchAuth] = useState<StitchAuthPayload | undefined>(undefined);
-  const [stitchActionState, setStitchActionState] = useState<"idle" | "success">("idle");
   const { data: project, isLoading: loadingProject, error: projectError } = useProject(id, {
     refetchInterval: 5000,
   });
@@ -127,7 +136,7 @@ export default function ProjectDetailPage({
     refetchInterval: isActive ? 5000 : undefined,
   });
   const createRun = useCreateRun(id);
-  const generateDesign = useGenerateDesign(id);
+  const designTools = useDesignTools();
 
   const artifacts = artifactsData?.items ?? [];
   const usageSummary = buildUsageSummary(artifacts);
@@ -143,21 +152,11 @@ export default function ProjectDetailPage({
   const currentNode = runDetail?.currentNode;
   const waitingStage = currentNode ? WAITING_STAGES[currentNode] : undefined;
   const resumeNode = resolveResumeNode(runDetail?.currentNode, runDetail?.timeline);
+  const resumeLabel = resumeNode ? (NODE_LABELS[resumeNode] ?? resumeNode) : "Failed Step";
   const stitchAuthError =
     runDetail?.lastErrorMessage?.toLowerCase().includes("stitch") ||
     runDetail?.lastErrorMessage?.toLowerCase().includes("credentials");
-
-  async function handleConnectAndResumeDesign() {
-    if (!stitchAuth) return;
-    setStitchActionState("idle");
-    await generateDesign.mutateAsync({
-      provider: "stitch_mcp",
-      modelProfile: "customtools",
-      stitchAuth,
-    });
-    await createRun.mutateAsync({ resumeFromNode: "GenerateDesign" });
-    setStitchActionState("success");
-  }
+  const stitchAuthConfigured = Boolean(designTools.data?.stitchAuthConfigured);
 
   if (loadingProject) return <ProjectSkeleton />;
   if (projectError) {
@@ -244,7 +243,7 @@ export default function ProjectDetailPage({
                   disabled={createRun.isPending}
                   className="btn btn-primary w-full"
                 >
-                  {createRun.isPending ? "Resuming\u2026" : "Resume from Failure"}
+                  {createRun.isPending ? "Resuming\u2026" : `Retry ${resumeLabel}`}
                 </button>
               )}
               {waitingStage && (
@@ -321,30 +320,19 @@ export default function ProjectDetailPage({
           {project.status === "failed" && stitchAuthError && (
             <div className="glass p-5 space-y-3">
               <h2 className="text-xs font-mono-display text-warning tracking-widest uppercase">
-                Stitch Reconnect
+                Stitch Configuration
               </h2>
-              <p className="text-sm text-text-2">
-                This run failed during design generation due to missing Stitch credentials.
-                Connect Stitch and resume from <span className="font-mono-display">GenerateDesign</span>.
-              </p>
-              <StitchAuthPanel onAuth={(payload) => setStitchAuth(payload)} />
-              <button
-                onClick={handleConnectAndResumeDesign}
-                disabled={!stitchAuth || generateDesign.isPending || createRun.isPending}
-                className="btn btn-primary w-full"
-              >
-                {generateDesign.isPending || createRun.isPending
-                  ? "Connecting…"
-                  : "Connect Stitch & Resume Design"}
-              </button>
-              {(generateDesign.isError || createRun.isError) && (
-                <div className="text-xs text-error bg-error-bg border border-error-dim rounded-lg p-2.5">
-                  {((generateDesign.error ?? createRun.error) as Error)?.message}
-                </div>
-              )}
-              {stitchActionState === "success" && (
-                <div className="text-xs text-success bg-success-bg border border-success-dim rounded-lg p-2.5">
-                  Stitch credentials saved. Resuming design generation.
+              {stitchAuthConfigured ? (
+                <p className="text-sm text-text-2">
+                  Server Stitch credentials are configured. Use <span className="font-mono-display">Retry Generate Design</span> to continue.
+                </p>
+              ) : (
+                <div className="text-xs text-warning bg-warning-bg border border-warning-dim rounded-lg p-2.5">
+                  Configure Stitch in backend <span className="font-mono-display">.env</span> only:
+                  <div className="mt-1 font-mono-display">
+                    STITCH_MCP_API_KEY or STITCH_MCP_OAUTH_TOKEN + STITCH_MCP_GOOG_USER_PROJECT
+                  </div>
+                  Then restart <span className="font-mono-display">api</span> and <span className="font-mono-display">worker</span>.
                 </div>
               )}
             </div>

@@ -18,7 +18,6 @@ export type ProjectStatus =
   | "failed";
 
 export type ApprovalStage = "prd" | "design" | "tech_plan" | "deploy";
-export type StitchAuthMethod = "api_key" | "oauth_access_token";
 
 export type ArtifactType =
   | "prd"
@@ -96,13 +95,6 @@ export interface ApprovalEvent {
   createdAt: string;
 }
 
-export interface StitchAuthPayload {
-  authMethod: StitchAuthMethod;
-  apiKey?: string;
-  oauthToken?: string;
-  googUserProject?: string;
-}
-
 export interface DesignTool {
   name: string;
   params: string[];
@@ -113,21 +105,18 @@ export interface GenerateDesignRequest {
   provider: DesignProvider;
   modelProfile: ModelProfile;
   promptConstraints: Record<string, unknown>;
-  stitchAuth?: StitchAuthPayload;
 }
 
 export interface DesignFeedbackRequest {
   targetScreenId?: string;
   targetComponentId?: string;
   feedbackText: string;
-  stitchAuth?: StitchAuthPayload;
 }
 
 export interface ApprovalRequest {
   stage: ApprovalStage;
   decision: "approved" | "rejected";
   notes?: string;
-  stitchAuth?: StitchAuthPayload;
 }
 
 export interface LlmRoutingPolicy {

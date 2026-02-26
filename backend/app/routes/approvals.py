@@ -8,8 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session, get_db
-from app.design.auth_cache import cache_stitch_auth
-from app.design.base import StitchAuthContext
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
@@ -126,16 +124,6 @@ async def submit_approval(
     if body.decision == "approved":
         project.status = _STAGE_TO_APPROVED_STATUS[body.stage]
     # On rejection, status stays at current (generation node will re-run)
-
-    # Optional Stitch auth capture for PRD->Design transition.
-    if (
-        body.stage == ApprovalStage.PRD
-        and body.decision == "approved"
-        and body.stitch_auth is not None
-    ):
-        auth = StitchAuthContext.from_mapping(body.stitch_auth.model_dump(exclude_none=True))
-        if auth is not None:
-            cache_stitch_auth(run.id, auth)
 
     await db.commit()
     await db.refresh(event)

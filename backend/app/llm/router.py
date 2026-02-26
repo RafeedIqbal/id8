@@ -23,15 +23,15 @@ MODEL_MAP: dict[ModelProfile, str] = {
 # ---------------------------------------------------------------------------
 
 NODE_PROFILE_MAP: dict[str, ModelProfile] = {
-    # Planning / reasoning nodes → primary
-    "GeneratePRD": ModelProfile.PRIMARY,
-    "GenerateTechPlan": ModelProfile.PRIMARY,
-    # Tool-heavy / code nodes → customtools
-    "WriteCode": ModelProfile.CUSTOMTOOLS,
+    # Non-design generation nodes default to Gemini 2.5 Pro for now.
+    "GeneratePRD": ModelProfile.FALLBACK,
+    "GenerateTechPlan": ModelProfile.FALLBACK,
+    "WriteCode": ModelProfile.FALLBACK,
+    # Keep design on customtools profile.
     "GenerateDesign": ModelProfile.CUSTOMTOOLS,
 }
 
-_DEFAULT_PROFILE = ModelProfile.PRIMARY
+_DEFAULT_PROFILE = ModelProfile.FALLBACK
 
 
 def resolve_model(profile: ModelProfile) -> str:
@@ -45,7 +45,6 @@ def resolve_model(profile: ModelProfile) -> str:
 def resolve_profile(node_name: str) -> ModelProfile:
     """Return the ``ModelProfile`` that *node_name* should use.
 
-    Falls back to ``primary`` for nodes not explicitly mapped (e.g.
-    ``IngestPrompt``, ``SecurityGate``).
+    Falls back to ``fallback`` for nodes not explicitly mapped.
     """
     return NODE_PROFILE_MAP.get(node_name, _DEFAULT_PROFILE)

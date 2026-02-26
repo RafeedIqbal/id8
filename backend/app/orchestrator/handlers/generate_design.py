@@ -11,13 +11,12 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.design.auth_cache import get_cached_stitch_auth
+from app.design.auth_resolver import get_default_stitch_auth
 from app.design.base import (
     DesignFeedback,
     DesignOutput,
     Screen,
     ScreenComponent,
-    StitchAuthContext,
     StitchAuthError,
 )
 from app.design.provider_factory import generate_with_fallback, regenerate_with_fallback
@@ -48,8 +47,7 @@ class GenerateDesignHandler(NodeHandler):
         if not prd_content:
             return NodeResult(outcome="failure", error="No approved PRD artifact found")
 
-        # 3. Extract provider preference and auth from workflow_payload or
-        #    from a pending design_spec artifact created by the /design/generate route
+        # 3. Extract provider preference and constraints.
         payload = ctx.workflow_payload or {}
         pending = _extract_pending_config(ctx.previous_artifacts)
         preferred_provider = (
@@ -59,11 +57,7 @@ class GenerateDesignHandler(NodeHandler):
         )
         preferred_provider_name = str(preferred_provider)
         constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
-        auth = (
-            _extract_auth(payload)
-            or _extract_auth(pending)
-            or get_cached_stitch_auth(ctx.run_id)
-        )
+        auth = get_default_stitch_auth()
 
         # 4. Check for rejection feedback (re-generation case)
         pending_feedback = _extract_pending_feedback(pending)
@@ -205,6 +199,7 @@ async def _load_previous_design(ctx: RunContext) -> DesignOutput:
     )
 
     design: dict[str, Any] | None = None
+    metadata: dict[str, Any] = {}
     for artifact in result.scalars():
         content = artifact.content
         if not isinstance(content, dict):
@@ -212,12 +207,17 @@ async def _load_previous_design(ctx: RunContext) -> DesignOutput:
         if content.get("status") == "pending":
             continue
         design = content
+        raw_meta = content.get("__design_metadata")
+        if isinstance(raw_meta, dict):
+            metadata = raw_meta
         break
 
     if design is None:
         design = ctx.previous_artifacts.get("design_spec")
     if not isinstance(design, dict):
         return DesignOutput()
+    if not metadata and isinstance(design.get("__design_metadata"), dict):
+        metadata = design["__design_metadata"]
 
     screens: list[Screen] = []
     for rs in design.get("screens", []):
@@ -241,15 +241,7 @@ async def _load_previous_design(ctx: RunContext) -> DesignOutput:
             assets=rs.get("assets", []),
         ))
 
-    return DesignOutput(screens=screens)
-
-
-def _extract_auth(payload: dict[str, Any]) -> StitchAuthContext | None:
-    """Build a StitchAuthContext from the workflow payload, if credentials present."""
-    auth_data = payload.get("stitch_auth")
-    if not isinstance(auth_data, dict):
-        return None
-    return StitchAuthContext.from_mapping(auth_data)
+    return DesignOutput(screens=screens, metadata=metadata)
 
 
 async def _load_rejection_feedback(ctx: RunContext) -> str | None:

@@ -7,23 +7,57 @@ import { cn } from "@/lib/utils";
 
 type NodeState = "completed" | "current" | "pending" | "failed";
 
-function getNodeStates(
+const TERMINAL_NODES = new Set(["EndSuccess", "EndFailed"]);
+
+function inferFailedNode(
   currentNode: string | undefined,
   timeline: RunTimelineEvent[],
   isFailed: boolean
+): string | undefined {
+  if (!isFailed) return undefined;
+  if (currentNode && currentNode !== "EndFailed") return currentNode;
+
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const event = timeline[i];
+    if (
+      event.eventType === "orchestrator.run_failed" &&
+      event.fromNode &&
+      !TERMINAL_NODES.has(event.fromNode)
+    ) {
+      return event.fromNode;
+    }
+  }
+
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const event = timeline[i];
+    if (event.toNode && !TERMINAL_NODES.has(event.toNode)) {
+      return event.toNode;
+    }
+  }
+
+  return undefined;
+}
+
+function getNodeStates(
+  currentNode: string | undefined,
+  timeline: RunTimelineEvent[],
+  isFailed: boolean,
+  failedNode: string | undefined
 ): Map<string, { state: NodeState; timestamp?: string }> {
   const states = new Map<string, { state: NodeState; timestamp?: string }>();
 
-  // Build set of visited nodes from timeline
+  // Build set of nodes actually entered (toNode), plus best-effort timestamps.
   const visited = new Set<string>();
   const timestamps = new Map<string, string>();
   for (const event of timeline) {
     visited.add(event.toNode);
     timestamps.set(event.toNode, event.createdAt);
-    if (event.fromNode) visited.add(event.fromNode);
+    if (event.fromNode && !timestamps.has(event.fromNode)) {
+      timestamps.set(event.fromNode, event.createdAt);
+    }
   }
 
-  const currentIdx = currentNode
+  const currentIdx = !isFailed && currentNode
     ? PIPELINE_NODES.indexOf(currentNode as (typeof PIPELINE_NODES)[number])
     : -1;
 
@@ -31,10 +65,18 @@ function getNodeStates(
     const idx = PIPELINE_NODES.indexOf(node);
     let state: NodeState = "pending";
 
-    if (node === currentNode) {
-      state = isFailed ? "failed" : "current";
-    } else if (visited.has(node) || (currentIdx >= 0 && idx < currentIdx)) {
-      state = "completed";
+    if (isFailed && failedNode) {
+      if (node === failedNode) {
+        state = "failed";
+      } else if (node !== "EndFailed" && visited.has(node)) {
+        state = "completed";
+      }
+    } else {
+      if (node === currentNode) {
+        state = isFailed ? "failed" : "current";
+      } else if (visited.has(node) || (currentIdx >= 0 && idx < currentIdx)) {
+        state = "completed";
+      }
     }
 
     states.set(node, { state, timestamp: timestamps.get(node) });
@@ -80,11 +122,12 @@ export function NodeTimeline({
   status?: string;
 }) {
   const isFailed = status === "failed";
-  const nodeStates = getNodeStates(currentNode, timeline, isFailed);
+  const failedNode = inferFailedNode(currentNode, timeline, isFailed);
+  const nodeStates = getNodeStates(currentNode, timeline, isFailed, failedNode);
 
-  // Filter out EndFailed unless we're actually in failed state
+  // Hide EndFailed when we can map failure to a concrete pipeline node.
   const visibleNodes = PIPELINE_NODES.filter(
-    (n) => n !== "EndFailed" || isFailed
+    (n) => n !== "EndFailed" || (isFailed && !failedNode)
   );
 
   return (

@@ -6,7 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.schemas.design import StitchAuthPayload
 from app.models.enums import ApprovalStage
 
 
@@ -14,7 +13,6 @@ class ApprovalRequest(BaseModel):
     stage: ApprovalStage
     decision: Literal["approved", "rejected"]
     notes: str | None = None
-    stitch_auth: StitchAuthPayload | None = None
 
 
 class ApprovalEvent(BaseModel):

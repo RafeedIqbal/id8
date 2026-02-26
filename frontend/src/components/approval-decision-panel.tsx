@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import type { ApprovalStage, StitchAuthPayload } from "@/types/domain";
+import type { ApprovalStage } from "@/types/domain";
 import { APPROVAL_STAGE_LABELS } from "@/lib/constants";
 import { useDesignTools, useSubmitApproval } from "@/lib/hooks";
 import { useRouter } from "next/navigation";
-import { StitchAuthPanel } from "@/components/stitch-auth-panel";
 
 export function ApprovalDecisionPanel({
   projectId,
@@ -16,19 +15,20 @@ export function ApprovalDecisionPanel({
 }) {
   const [decision, setDecision] = useState<"approved" | "rejected" | null>(null);
   const [notes, setNotes] = useState("");
-  const [stitchAuth, setStitchAuth] = useState<StitchAuthPayload | undefined>(undefined);
   const [submitted, setSubmitted] = useState(false);
   const approval = useSubmitApproval(projectId);
   const designTools = useDesignTools();
   const router = useRouter();
   const isPrdApproval = stage === "prd" && decision === "approved";
-  const stitchRequired =
-    isPrdApproval && (designTools.data?.provider ?? "stitch_mcp") === "stitch_mcp";
+  const stitchAuthConfigured = Boolean(designTools.data?.stitchAuthConfigured);
+  const requiresServerStitch =
+    isPrdApproval &&
+    (designTools.data?.provider ?? "stitch_mcp") === "stitch_mcp";
 
   const canSubmit =
     decision !== null &&
     (decision === "approved" || notes.trim().length > 0) &&
-    (!stitchRequired || Boolean(stitchAuth));
+    (!requiresServerStitch || stitchAuthConfigured);
 
   async function handleSubmit() {
     if (!decision || !canSubmit) return;
@@ -36,7 +36,6 @@ export function ApprovalDecisionPanel({
       stage,
       decision,
       notes: notes.trim() || undefined,
-      stitchAuth: isPrdApproval ? stitchAuth : undefined,
     });
     setSubmitted(true);
     setTimeout(() => router.push(`/projects/${projectId}`), 1200);
@@ -125,16 +124,17 @@ export function ApprovalDecisionPanel({
       {isPrdApproval && (
         <div className="space-y-2">
           <div className="text-xs font-medium text-text-1">
-            Stitch Setup (required for design generation)
+            Stitch Setup
           </div>
-          <p className="text-xs text-text-2">
-            Create a Stitch API key in Stitch Settings -&gt; API Keys -&gt; Create API Key, then authenticate below.
-          </p>
-          <StitchAuthPanel onAuth={(payload) => setStitchAuth(payload)} />
-          {stitchRequired && !stitchAuth && (
-            <p className="text-xs text-warning">
-              Stitch credentials are required before approving PRD when provider is <span className="font-mono-display">stitch_mcp</span>.
+          {stitchAuthConfigured ? (
+            <p className="text-xs text-success">
+              Server-level Stitch credentials are configured.
             </p>
+          ) : (
+            <div className="text-xs text-warning bg-warning-bg border border-warning-dim rounded-lg p-2.5">
+              Stitch is required for design generation. Set <span className="font-mono-display">STITCH_MCP_API_KEY</span> (or OAuth env vars)
+              in backend <span className="font-mono-display">.env</span>, then restart API/worker.
+            </div>
           )}
         </div>
       )}
