@@ -127,6 +127,18 @@ class SupabaseClient:
         result: dict[str, Any] = await self._request("GET", f"/v1/projects/{ref}")
         return result
 
+    async def find_project_by_name(self, name: str) -> dict[str, Any] | None:
+        """Return an existing project whose name matches *name* (case-insensitive)."""
+        target = name.strip().lower()
+        if not target:
+            return None
+        projects = await self.list_projects()
+        for project in projects:
+            project_name = str(project.get("name", "")).strip().lower()
+            if project_name == target:
+                return project
+        return None
+
     async def create_project(
         self,
         *,
@@ -228,6 +240,23 @@ class SupabaseClient:
                 raise SupabaseError(f"Migration failed for {path}: {exc}") from exc
         return executed
 
+    async def configure_auth(self, ref: str, auth_settings: dict[str, Any] | None = None) -> None:
+        """Apply auth configuration, ignoring unsupported API versions."""
+        if not auth_settings:
+            return
+        try:
+            await self._request("PATCH", f"/v1/projects/{ref}/config/auth", body=auth_settings)
+            logger.info("Configured Supabase auth settings for project %s", ref)
+        except SupabaseError as exc:
+            # Not all management API versions expose auth config on this path.
+            if exc.status_code in (404, 405):
+                logger.warning(
+                    "Supabase auth configuration endpoint unavailable for project %s; skipping",
+                    ref,
+                )
+                return
+            raise
+
 
 # ---------------------------------------------------------------------------
 # High-level provisioning helper
@@ -243,6 +272,7 @@ async def provision_supabase(
     sql_files: list[dict[str, str]],
     region: str = "us-east-1",
     existing_ref: str | None = None,
+    auth_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Provision a Supabase project and run migrations.
 
@@ -263,15 +293,25 @@ async def provision_supabase(
         project = await client.wait_for_active(ref)
         logger.info("Using existing Supabase project ref=%s", ref)
     else:
-        raw = await client.create_project(
-            name=project_name,
-            org_id=org_id,
-            db_pass=db_pass,
-            region=region,
-        )
-        ref = str(raw["id"])
-        logger.info("Created Supabase project ref=%s name=%s", ref, project_name)
-        project = await client.wait_for_active(ref)
+        existing = await client.find_project_by_name(project_name)
+        if existing is not None:
+            ref = str(existing.get("id") or existing.get("ref") or "")
+            if not ref:
+                raise SupabaseError(f"Existing Supabase project '{project_name}' missing id/ref")
+            project = await client.wait_for_active(ref)
+            logger.info("Reusing existing Supabase project ref=%s name=%s", ref, project_name)
+        else:
+            raw = await client.create_project(
+                name=project_name,
+                org_id=org_id,
+                db_pass=db_pass,
+                region=region,
+            )
+            ref = str(raw["id"])
+            logger.info("Created Supabase project ref=%s name=%s", ref, project_name)
+            project = await client.wait_for_active(ref)
+
+    await client.configure_auth(ref, auth_settings=auth_settings)
 
     keys = await client.get_api_keys(ref)
     anon_key = keys.get("anon", "")

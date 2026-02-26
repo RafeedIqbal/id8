@@ -362,13 +362,19 @@ async def deploy_to_vercel(
             existing_project_id = None
 
     if not existing_project_id:
-        vproject = await client.create_project(
-            project_name,
-            framework="nextjs",
-            github_repo=github_repo,
-            github_org=github_org,
-        )
-        logger.info("Created Vercel project %s (id=%s)", project_name, vproject.id)
+        try:
+            vproject = await client.get_project(project_name)
+            logger.info("Using existing Vercel project by name %s (id=%s)", project_name, vproject.id)
+        except VercelError as exc:
+            if exc.status_code != 404:
+                raise
+            vproject = await client.create_project(
+                project_name,
+                framework="nextjs",
+                github_repo=github_repo,
+                github_org=github_org,
+            )
+            logger.info("Created Vercel project %s (id=%s)", project_name, vproject.id)
 
     # Inject publishable env vars.
     await client.set_env_vars(vproject.id, env_vars)

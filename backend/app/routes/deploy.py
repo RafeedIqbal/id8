@@ -84,12 +84,12 @@ async def deploy_project(
     if not run:
         raise HTTPException(status_code=409, detail="No active run for this project")
 
-    if run.current_node != NodeName.WAIT_DEPLOY_APPROVAL:
+    if run.current_node == NodeName.END_SUCCESS:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Run is at node '{run.current_node}'; deployment can only be "
-                f"triggered from '{NodeName.WAIT_DEPLOY_APPROVAL}'"
+                f"Run is at terminal node '{NodeName.END_SUCCESS}'; "
+                "deployment is already complete"
             ),
         )
 
@@ -119,12 +119,17 @@ async def deploy_project(
     else:
         record = existing_record
 
-    # 6. Transition project to deploying and persist before triggering background work.
+    # 6. Force the run back to the deploy wait gate so orchestrator will
+    # deterministically process the recorded deploy-approval event.
+    run.current_node = NodeName.WAIT_DEPLOY_APPROVAL
+    run.status = ProjectStatus.DEPLOY_READY
+
+    # 7. Transition project to deploying and persist before triggering background work.
     project.status = ProjectStatus.DEPLOYING
     await db.commit()
     await db.refresh(record)
 
-    # 7. Trigger orchestrator to resume from WaitDeployApproval → DeployProduction.
+    # 8. Trigger orchestrator to resume from WaitDeployApproval → DeployProduction.
     background_tasks.add_task(_run_orchestrator_background, run.id)
 
     return DeploymentRecordResponse.model_validate(record)

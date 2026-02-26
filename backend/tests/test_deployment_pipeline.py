@@ -15,6 +15,7 @@ from app.deploy.supabase import (
     SupabaseClient,
     SupabaseError,
     SupabaseProvisionTimeoutError,
+    provision_supabase,
 )
 from app.deploy.vercel import (
     VercelClient,
@@ -22,6 +23,7 @@ from app.deploy.vercel import (
     VercelDeployment,
     VercelError,
     VercelProject,
+    deploy_to_vercel,
     _deployment_from_json,
     _project_from_json,
 )
@@ -198,6 +200,31 @@ class TestSupabaseClient:
             with pytest.raises(SupabaseError, match="Migration failed"):
                 await client.run_migrations("ref", sql_files)
 
+    @pytest.mark.asyncio
+    async def test_provision_supabase_reuses_project_by_name(self) -> None:
+        fake_client = MagicMock()
+        fake_client.find_project_by_name = AsyncMock(
+            return_value={"id": "proj_123", "name": "id8-abc"}
+        )
+        fake_client.wait_for_active = AsyncMock(return_value={"id": "proj_123", "region": "us-east-1"})
+        fake_client.create_project = AsyncMock()
+        fake_client.configure_auth = AsyncMock()
+        fake_client.get_api_keys = AsyncMock(return_value={"anon": "anon_key"})
+        fake_client.run_migrations = AsyncMock(return_value=["migrations/001_init.sql"])
+
+        with patch("app.deploy.supabase.SupabaseClient", return_value=fake_client):
+            result = await provision_supabase(
+                access_token="tok",
+                org_id="org_1",
+                project_name="id8-abc",
+                db_pass="dbpass123",
+                sql_files=[{"path": "migrations/001_init.sql", "content": "SELECT 1;"}],
+            )
+
+        assert result["supabase_ref"] == "proj_123"
+        fake_client.create_project.assert_not_awaited()
+        fake_client.configure_auth.assert_awaited_once()
+
 
 # ===========================================================================
 # Vercel client
@@ -310,6 +337,51 @@ class TestVercelClient:
             # ERROR is a terminal state — should return immediately (not raise)
             result = await client.poll_deployment("dpl_1", timeout=60)
         assert result.state == "ERROR"
+
+    @pytest.mark.asyncio
+    async def test_deploy_to_vercel_reuses_project_by_name(self) -> None:
+        fake_client = MagicMock()
+        fake_client.get_project = AsyncMock(
+            return_value=VercelProject(
+                id="prj_existing",
+                name="id8-abc",
+                framework="nextjs",
+                production_url=None,
+            )
+        )
+        fake_client.create_project = AsyncMock()
+        fake_client.set_env_vars = AsyncMock()
+        fake_client.create_deployment = AsyncMock(
+            return_value=VercelDeployment(
+                id="dpl_1",
+                url="https://id8-abc.vercel.app",
+                state="READY",
+                ready_state="READY",
+                production_url="https://id8-abc.vercel.app",
+            )
+        )
+        fake_client.poll_deployment = AsyncMock(
+            return_value=VercelDeployment(
+                id="dpl_1",
+                url="https://id8-abc.vercel.app",
+                state="READY",
+                ready_state="READY",
+                production_url="https://id8-abc.vercel.app",
+            )
+        )
+
+        with patch("app.deploy.vercel.VercelClient", return_value=fake_client):
+            result = await deploy_to_vercel(
+                token="tok",
+                team_id=None,
+                project_name="id8-abc",
+                github_org="acme",
+                github_repo="my-app",
+                env_vars={},
+            )
+
+        assert result["vercel_project_id"] == "prj_existing"
+        fake_client.create_project.assert_not_awaited()
 
 
 # ===========================================================================
@@ -463,6 +535,10 @@ async def test_deploy_production_fails_without_vercel_token() -> None:
     ctx.run_id = uuid.uuid4()
     ctx.project_id = uuid.uuid4()
     ctx.workflow_payload = {}
+    ctx.db.flush = AsyncMock()
+    ctx.db.execute = AsyncMock()
+    ctx.db.execute.return_value.scalar_one_or_none = MagicMock(return_value=None)
+    ctx.db.add = MagicMock()
 
     mock_project = MagicMock()
     mock_project.github_repo_url = "https://github.com/acme/my-app"
@@ -502,6 +578,10 @@ async def test_deploy_production_fails_without_github_repo_url() -> None:
     ctx.run_id = uuid.uuid4()
     ctx.project_id = uuid.uuid4()
     ctx.workflow_payload = {}
+    ctx.db.flush = AsyncMock()
+    ctx.db.execute = AsyncMock()
+    ctx.db.execute.return_value.scalar_one_or_none = MagicMock(return_value=None)
+    ctx.db.add = MagicMock()
 
     mock_project = MagicMock()
     mock_project.github_repo_url = None
@@ -602,3 +682,71 @@ async def test_deploy_production_success_path() -> None:
     assert result.artifact_data["live_url"] == "https://my-app.vercel.app"
     assert result.artifact_data["environment"] == "production"
     assert result.context_updates["live_url"] == "https://my-app.vercel.app"
+
+
+@pytest.mark.asyncio
+async def test_deploy_production_fails_when_health_check_fails() -> None:
+    handler = DeployProductionHandler()
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {}
+    ctx.db.flush = AsyncMock()
+    ctx.db.execute = AsyncMock()
+    ctx.db.execute.return_value.scalar_one_or_none = MagicMock(return_value=None)
+    ctx.db.add = MagicMock()
+
+    mock_project = MagicMock()
+    mock_project.github_repo_url = "https://github.com/acme/my-app"
+    mock_project.live_deployment_url = None
+
+    vercel_result = {
+        "vercel_project_id": "prj_abc",
+        "deployment_id": "dpl_xyz",
+        "deployment_url": "https://my-app.vercel.app",
+        "production_url": "https://my-app.vercel.app",
+        "state": "READY",
+    }
+
+    with patch(
+        "app.orchestrator.handlers.deploy_production._load_deploy_approval",
+        new_callable=AsyncMock,
+        return_value=MagicMock(),
+    ):
+        with patch(
+            "app.orchestrator.handlers.deploy_production._load_code_snapshot",
+            new_callable=AsyncMock,
+            return_value={"files": []},
+        ):
+            with patch(
+                "app.orchestrator.handlers.deploy_production._load_project",
+                new_callable=AsyncMock,
+                return_value=mock_project,
+            ):
+                with patch(
+                    "app.orchestrator.handlers.deploy_production.settings"
+                ) as mock_settings:
+                    mock_settings.vercel_token = "tok"
+                    mock_settings.vercel_team_id = ""
+                    mock_settings.supabase_access_token = ""
+                    mock_settings.supabase_org_id = ""
+                    with patch(
+                        "app.orchestrator.handlers.deploy_production.deploy_to_vercel",
+                        new_callable=AsyncMock,
+                        return_value=vercel_result,
+                    ):
+                        with patch(
+                            "app.orchestrator.handlers.deploy_production._health_check",
+                            new_callable=AsyncMock,
+                            return_value=(False, "HTTP 503"),
+                        ):
+                            with patch(
+                                "app.orchestrator.handlers.deploy_production._create_or_update_deployment_record",
+                                new_callable=AsyncMock,
+                                return_value=MagicMock(),
+                            ) as mock_record:
+                                result = await handler.execute(ctx)
+
+    assert result.outcome == "failure"
+    assert "health check failed" in (result.error or "").lower()
+    assert mock_record.await_args.kwargs["status"] == "failed"

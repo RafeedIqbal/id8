@@ -35,6 +35,7 @@ from app.deploy.supabase import SupabaseError, provision_supabase
 from app.deploy.vercel import VercelDeployTimeoutError, VercelError, deploy_to_vercel
 from app.github.client import _parse_owner_repo
 from app.models.approval_event import ApprovalEvent
+from app.models.audit_event import AuditEvent
 from app.models.deployment_record import DeploymentRecord
 from app.models.enums import ArtifactType, ApprovalStage
 from app.models.project import Project
@@ -84,25 +85,31 @@ class DeployProductionHandler(NodeHandler):
 
         # 4. Validate credentials.
         if not settings.vercel_token:
-            return NodeResult(
-                outcome="failure",
+            return await _fail_deployment(
+                ctx,
+                project,
                 error="VERCEL_TOKEN is not configured",
+                provider_payload={"error": "VERCEL_TOKEN is not configured", "stage": "precheck"},
             )
 
         # 5. Resolve GitHub owner/repo.
         github_url = project.github_repo_url
         if not github_url:
-            return NodeResult(
-                outcome="failure",
+            return await _fail_deployment(
+                ctx,
+                project,
                 error="project.github_repo_url is not set; run PreparePR first",
+                provider_payload={"error": "project.github_repo_url missing", "stage": "precheck"},
             )
 
         try:
             github_org, github_repo = _parse_owner_repo(github_url)
         except Exception as exc:
-            return NodeResult(
-                outcome="failure",
+            return await _fail_deployment(
+                ctx,
+                project,
                 error=f"Cannot parse GitHub repo URL: {exc}",
+                provider_payload={"error": f"Cannot parse GitHub repo URL: {exc}", "stage": "precheck"},
             )
 
         # 6. Provision Supabase (optional — skipped if no access token).
@@ -121,9 +128,11 @@ class DeployProductionHandler(NodeHandler):
                     existing_ref=existing_ref,
                 )
             except SupabaseError as exc:
-                return NodeResult(
-                    outcome="failure",
+                return await _fail_deployment(
+                    ctx,
+                    project,
                     error=f"Supabase provisioning failed: {exc}",
+                    provider_payload={"error": str(exc), "stage": "supabase"},
                 )
         else:
             logger.info(
@@ -138,6 +147,7 @@ class DeployProductionHandler(NodeHandler):
             env_vars["NEXT_PUBLIC_SUPABASE_URL"] = supabase_meta["supabase_url"]
         if supabase_meta.get("supabase_anon_key"):
             env_vars["NEXT_PUBLIC_SUPABASE_ANON_KEY"] = supabase_meta["supabase_anon_key"]
+        await _record_env_injection_audit(ctx, env_vars.keys())
 
         # 8. Vercel deployment.
         existing_project_id = _extract_existing_vercel_project_id(ctx)
@@ -182,8 +192,17 @@ class DeployProductionHandler(NodeHandler):
         # 9. Health check.
         health_ok, health_detail = await _health_check(production_url)
         if not health_ok:
-            logger.warning("Health check failed for %s: %s", production_url, health_detail)
-            # Non-fatal: we still consider the deployment successful but log the warning.
+            return await _fail_deployment(
+                ctx,
+                project,
+                error=f"Production health check failed for {production_url}: {health_detail}",
+                provider_payload={
+                    **vercel_meta,
+                    "supabase": supabase_meta,
+                    "health_check": {"ok": health_ok, "detail": health_detail},
+                },
+                rollback_candidate=True,
+            )
 
         # 10. Persist DeploymentRecord.
         end_time = datetime.now(tz=UTC)
@@ -319,6 +338,25 @@ async def _health_check(url: str, *, timeout: float = _HEALTH_CHECK_TIMEOUT) -> 
         return False, str(exc)
 
 
+async def _record_env_injection_audit(ctx: RunContext, keys: Any) -> None:
+    """Record publishable env-var names injected into deployment runtime."""
+    key_names = sorted({str(k) for k in keys if str(k)})
+    if not key_names:
+        return
+
+    event = AuditEvent(
+        project_id=ctx.project_id,
+        actor_user_id=None,
+        event_type="deploy.env_vars_injected",
+        event_payload={
+            "run_id": str(ctx.run_id),
+            "keys": key_names,
+        },
+    )
+    ctx.db.add(event)
+    await ctx.db.flush()
+
+
 async def _create_or_update_deployment_record(
     ctx: RunContext,
     *,
@@ -335,6 +373,7 @@ async def _create_or_update_deployment_record(
         .where(
             DeploymentRecord.run_id == ctx.run_id,
             DeploymentRecord.environment == "production",
+            DeploymentRecord.status == "queued",
         )
         .order_by(DeploymentRecord.created_at.desc())
         .limit(1)

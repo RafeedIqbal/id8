@@ -38,6 +38,16 @@ _BLOCKED_KEYWORDS: frozenset[str] = frozenset(
 )
 
 
+def _matches_allowlist(key: str) -> bool:
+    upper = key.upper()
+    return any(pat.search(upper) for pat in _ALLOWLIST_PATTERNS)
+
+
+def _blocked_keywords_for(key: str) -> list[str]:
+    upper = key.upper()
+    return [kw for kw in sorted(_BLOCKED_KEYWORDS) if kw in upper]
+
+
 def filter_env_vars(vars: dict[str, str]) -> dict[str, str]:
     """Return a copy of *vars* containing only publishable keys.
 
@@ -48,15 +58,13 @@ def filter_env_vars(vars: dict[str, str]) -> dict[str, str]:
     rejected_names: list[str] = []
 
     for key, value in vars.items():
-        upper = key.upper()
-
         # Hard block: key contains a forbidden keyword.
-        if any(kw in upper for kw in _BLOCKED_KEYWORDS):
+        if _blocked_keywords_for(key):
             rejected_names.append(key)
             continue
 
         # Must match at least one allowlist pattern.
-        if not any(pat.search(upper) for pat in _ALLOWLIST_PATTERNS):
+        if not _matches_allowlist(key):
             rejected_names.append(key)
             continue
 
@@ -85,13 +93,17 @@ def assert_no_secrets(vars: dict[str, str]) -> None:
     Use this as a final gate before actually sending vars to an external
     service — it provides an explicit, auditable assertion point.
     """
-    leaked = [
-        k
-        for k in vars
-        if any(kw in k.upper() for kw in _BLOCKED_KEYWORDS)
-    ]
-    if leaked:
+    violations: list[str] = []
+    for key in sorted(vars):
+        blocked = _blocked_keywords_for(key)
+        if blocked:
+            violations.append(f"{key} (blocked keywords: {', '.join(blocked)})")
+            continue
+        if not _matches_allowlist(key):
+            violations.append(f"{key} (not publishable; expected NEXT_PUBLIC_* or PUBLIC_*)")
+
+    if violations:
         raise ValueError(
-            f"Secret safety violation: the following keys must not be "
-            f"injected into the frontend runtime: {', '.join(sorted(leaked))}"
+            "SECRET safety violation: the following keys must not be "
+            f"injected into the frontend runtime: {', '.join(violations)}"
         )
