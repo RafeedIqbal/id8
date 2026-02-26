@@ -3,49 +3,68 @@
 Used by the ``InternalSpecProvider`` to produce a screen-by-screen design
 specification via the LLM when Stitch MCP is unavailable.
 """
+
 from __future__ import annotations
 
 import json
 from typing import Any
 
 _SYSTEM_PROMPT = """\
-You are an expert UI/UX designer and front-end architect.  Your job is to
-produce a detailed, screen-by-screen design specification for a web
-application based on the approved PRD.
+You are an expert UI/UX designer. Produce a screen-by-screen design spec for a **frontend-only visual prototype**.
 
-You MUST respond with a single JSON object (no markdown fences, no preamble)
-matching this exact schema:
+This is a self-contained Next.js app with NO backend. All data is
+hardcoded. Every screen must be routable, visually polished, and
+interactive.
+
+Respond with a single JSON object (no markdown, no preamble):
 
 {
   "screens": [
     {
-      "id": "string — unique screen identifier (e.g. screen-1)",
-      "name": "string — human-readable screen name",
-      "description": "string — purpose and layout overview",
+      "id": "string (e.g. screen-dashboard)",
+      "name": "string",
+      "route": "string — Next.js app router path (e.g. /dashboard)",
+      "description": "string — layout and purpose",
       "components": [
         {
-          "id": "string — unique component id (e.g. comp-1)",
-          "name": "string — component name",
-          "type": "string — component type (e.g. header, form, table, card, button, nav)",
+          "id": "string (e.g. comp-sidebar)",
+          "name": "string",
+          "type": "string (nav|header|card|table|form|modal|chart|list|button|search|filter|tabs|badge|avatar)",
           "properties": {
             "label": "optional string",
-            "placeholder": "optional string",
-            "variant": "optional string"
+            "variant": "optional string",
+            "interaction": "optional string — click/hover/toggle/filter/navigate behavior"
           }
         }
       ],
-      "assets": ["optional list of asset references"]
+      "dummy_data": "string — brief description of what hardcoded data this screen displays",
+      "transitions": "string — animations/transitions when entering or interacting"
     }
-  ]
+  ],
+  "navigation": {
+    "type": "sidebar|topnav|tabs",
+    "items": [{"label": "string", "route": "string", "icon": "optional string"}]
+  },
+  "design_tokens": {
+    "color_scheme": "string — primary/secondary/accent hex values",
+    "font": "string — Google Font or system font stack",
+    "border_radius": "string (e.g. rounded-lg)",
+    "spacing_scale": "string (e.g. 4px base)"
+  }
 }
 
-Requirements:
-- Generate screens covering all key user flows described in the PRD.
-- Each screen should have a meaningful name and description.
-- Include all interactive components (forms, buttons, navigation, tables, etc).
-- Use consistent component IDs across related screens.
-- Prefer modern, accessible design patterns.
-- Return ONLY valid JSON — no markdown, no commentary.
+Rules:
+- Every screen has a unique route. All routes are client-side navigable.
+- Include a persistent navigation component (sidebar or topnav) linking all screens.
+- Each screen should feel complete: use realistic dummy data descriptions (names, dates, amounts, statuses).
+- Specify interaction behaviors: hover states, click actions, filter/sort, modals, tab switching.
+- Specify enter/transition animations (fade-in, slide, scale).
+- Design for visual polish: consistent spacing, color hierarchy, typography scale.
+- Include at least one data visualization component (chart, stat cards, progress bars).
+- Include empty states and loading skeletons where appropriate.
+- No backend, no API calls, no auth screens. Everything is client-side with hardcoded data.
+
+Return ONLY valid JSON.
 """
 
 _USER_PROMPT = """\

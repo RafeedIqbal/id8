@@ -1,163 +1,170 @@
 """Prompt templates for phased code generation."""
+
 from __future__ import annotations
 
 import json
 from typing import Any
 
 _SYSTEM_PROMPT_FULL = """\
-You are an expert full-stack software engineer. Generate production-quality code.
+You are an expert frontend engineer. Generate a visually polished, self-contained Next.js prototype.
 
-Runtime profile is fixed:
-- Framework: Next.js full-stack (App Router)
-- Hosting: Vercel
-- Database: none required by default
+Stack (fixed):
+- Next.js 14+ App Router, TypeScript, Tailwind CSS
+- Hosting: Vercel (static export compatible)
+- Backend: NONE. Zero API routes, zero server actions, zero database.
 
-Rules:
-1. Produce a complete, runnable Next.js project that deploys on Vercel without manual edits.
-2. Include dependency manifests and runtime configuration.
-3. Every local import must resolve to another file in the set.
-4. Never include secrets. Use environment variables and `.env.example`.
-5. If `vercel.json` is present, all function patterns must be under `api/`.
-6. Prefer Next.js route handlers / server actions over external backend runtimes.
-7. Dependency policy (MUST):
-   - Check for deprecated, unmaintained, or known-vulnerable packages.
-8. Build reliability (MUST):
-   - Every imported package, CLI, loader, or config plugin must be declared in `package.json`.
-   - Prevent module-not-found failures from config-driven plugins (for example `autoprefixer`) by
-     either declaring the required dependency or omitting that plugin/config.
-   - Keep dependency versions mutually compatible with the selected Next.js runtime.
-9. Avoid backend or API elements, Make the web app self-contained, and purely frontend, match the provide design/context as closely as possble, with reactive front-end elements and animations.
-10. Use the provided design spec and context to generate the code.
-11. Use dummy data to populate the app so that all elements render and are interactive.
+Core requirements:
+1. **Purely visual frontend.** All data is hardcoded in typed
+   `src/data/*.ts` files. No fetch(), no API calls, no server
+   components that fetch data.
+2. **Every page is routable.** Use Next.js App Router file-based
+   routing. Each design screen = one `page.tsx`. Include persistent
+   navigation (sidebar or topnav) linking all routes.
+3. **Rich dummy data.** Realistic, diverse mock data (names, dates,
+   amounts, statuses, avatars via ui-avatars.com URLs). 5-15 items
+   per entity. Typed with TypeScript interfaces in `src/types/`.
+4. **Interactive UI.** Client-side state for: filters, search,
+   sorting, tab switching, modals, form inputs, toggles, accordions.
+   Use `useState`/`useReducer`. In-memory only, no persistence.
+5. **Visually polished.** Consistent color palette, typography scale,
+   spacing, rounded corners, shadows, hover/focus states. Tailwind
+   CSS utilities. Subtle animations via CSS transitions or
+   framer-motion.
+6. **Responsive.** Mobile-first breakpoints. Sidebar collapses on
+   small screens.
+7. **Deploy-ready.** Must `npm run build` on Vercel with zero config.
+   Every import resolves. Every dependency in `package.json`.
 
-You MUST return a single valid JSON object:
+Dependency rules:
+- MUST include: next, react, react-dom, typescript, tailwindcss, @tailwindcss/postcss, lucide-react.
+- RECOMMENDED: framer-motion (animations), clsx or tailwind-merge (conditional classes).
+- NEVER include: any database driver, ORM, auth library, API framework, or server-only package.
+- Every imported package must be in `package.json` with compatible versions.
+
+File structure:
+- `src/app/layout.tsx` — root layout with navigation, font import, global styles
+- `src/app/page.tsx` — home/landing page
+- `src/app/[route]/page.tsx` — one per screen
+- `src/components/` — reusable UI components
+- `src/data/` — hardcoded mock data (typed exports)
+- `src/types/` — TypeScript interfaces
+- `src/lib/` — utils (cn helper, formatters)
+
+Output format — return a single valid JSON object:
 {
   "files": [
-    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "typescript"}
+    {"path": "relative/path", "content": "full contents", "language": "typescript"}
   ],
   "build_command": "npm run build",
-  "test_command": "npm test",
+  "test_command": "npx tsc --noEmit",
   "entry_point": "src/app/page.tsx"
 }
 
-Return ONLY JSON.
+Return ONLY JSON. No markdown fences, no commentary.
 """
 
 _SYSTEM_PROMPT_CHUNK = """\
-You are an expert full-stack software engineer. Generate ONE phased chunk of files.
+You are an expert frontend engineer. Generate ONE phased chunk of files for a self-contained Next.js prototype.
 
-Runtime profile is fixed:
-- Framework: Next.js full-stack (App Router)
-- Hosting: Vercel
+Stack: Next.js 14+ App Router, TypeScript, Tailwind CSS. Hosting: Vercel. Backend: NONE.
 
 Rules:
-1. Output only files for the requested phase.
-2. Use complete, production-ready content.
-3. Do not include secrets; use env vars and `.env.example`.
-4. Keep imports consistent with already-generated files and file inventory.
-5. Return only valid JSON with this shape:
-{
-  "files": [
-    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "typescript"}
-  ]
-}
-6. Every relative JS/TS import must resolve to a generated file path.
-7. Use stable paths under `src/`, `app/`, `components/`, `lib/`, `api/`, `public/`.
-8. Ensure Vercel deploy baseline exists across phases:
-   - `package.json` with Next.js build scripts.
-   - Next.js runtime entry files (`app/page.tsx` or `src/app/page.tsx`).
-   - Optional `vercel.json` uses only `api/...` function patterns.
-9. Dependency policy (MUST):
-   - Only introduce libraries required by files in this chunk.
-   - Avoid deprecated, unmaintained, or known-vulnerable packages.
-10. Build reliability (MUST):
-   - Do not add imports/plugins unless matching dependencies are declared in `package.json`.
-   - Prevent module-not-found build failures (for example missing `autoprefixer`) by adding required
-     deps when config references them, or by not emitting that config/plugin.
-11. Avoid backend or API elements, Make the web app self-contained, and purely frontend, match the provide design/context as closely as possble, with reactive front-end elements and animations.
-12. Use the provided design spec and context to generate the code.
-13. Use dummy data to populate the app so that all elements render and are interactive.
+1. Output only files for the requested phase. Complete, production-ready content.
+2. No secrets, no env vars needed (no backend). No API routes, no server actions.
+3. Keep imports consistent with already-generated files and file inventory.
+4. Return valid JSON: {"files": [{"path": "string", "content": "string", "language": "string"}]}
+5. Every import must resolve to a generated file path or a declared package.
+6. Paths under `src/` only: `src/app/`, `src/components/`, `src/data/`, `src/lib/`, `src/types/`.
+7. Build reliability: every imported package must be in `package.json` with compatible versions.
+8. All data is hardcoded in `src/data/` files. Realistic dummy data with TypeScript types.
+9. All UI must be interactive (client-side state), visually polished (Tailwind), and routable (App Router).
+10. Include animations/transitions. Use hover/focus states. Responsive layout.
+11. Match the design spec closely: colors, layout, typography, component hierarchy.
 
 Return ONLY JSON.
 """
 
 _USER_PROMPT_FULL = """\
-Generate the complete source code for the project based on the following artifacts.
+Generate all files for a complete, Vercel-deployable Next.js frontend prototype.
 
 ## Design Specification
 {design_spec_content}
 
-## Design Visual Context (for fidelity)
+## Visual Context
 {design_visual_context}
 
-## PRD Summary
+## PRD
 {prd_content}
 
-Generate all files needed for a working Vercel-deployable Next.js full-stack project.
+Match the design closely. Every screen routable. All elements
+interactive with dummy data. No backend code.
 """
 
 _USER_PROMPT_WITH_FEEDBACK_FULL = """\
-Generate revised source code. A previous version was rejected by the security
-gate. Fix these security issues:
+Revise the code. Previous version was rejected. Fix these issues:
 {feedback}
 
 ## Design Specification
 {design_spec_content}
 
-## Design Visual Context (for fidelity)
+## Visual Context
 {design_visual_context}
 
-## PRD Summary
+## PRD
 {prd_content}
 
-## Previous Code Snapshot
+## Previous Code
 {previous_code}
 
-Fix all findings without regressions. Return the complete updated file set.
+Fix all findings. Keep all interactive elements and dummy data. Return the complete updated file set.
 """
 
 _USER_PROMPT_CHUNK = """\
-Generate only the {chunk_label} files for this project.
+Generate the **{chunk_label}** phase files.
 
-Chunk-specific requirements:
+Phase requirements:
 {chunk_requirements}
 
-## Design Specification
+## Design Spec
 {design_spec_content}
 
-## Design Visual Context (for fidelity)
+## Visual Context
 {design_visual_context}
 
-## PRD Summary
+## PRD
 {prd_content}
 
-## Files generated in previous chunks
+## Already generated files
 {generated_files}
 
-## Current file path inventory (authoritative)
+## File inventory
 {generated_file_index}
 {security_feedback_block}
 {previous_code_block}
-Return only JSON with a `files` array for this phase.
+Return only JSON with a `files` array. No backend code. All UI interactive with dummy data.
 """
 
 _CHUNK_REQUIREMENTS = {
     "backend": (
-        "Implement server-side logic using Next.js route handlers under `app/api` or `src/app/api` "
-        "and reusable server utilities under `lib/`."
+        "Generate TypeScript interfaces in `src/types/` and hardcoded dummy data files in `src/data/`. "
+        "Include realistic mock data (5-15 items per entity) with proper types. "
+        "Add utility helpers in `src/lib/` (cn helper, date formatters, currency formatters). "
+        "NO API routes, NO server logic, NO database — data layer is purely static typed arrays."
     ),
     "frontend": (
-        "Create Next.js pages/components from design screens. Keep UI structure, hierarchy, and naming "
-        "consistent with provided design context."
+        "Create Next.js App Router pages and React components matching the design spec. "
+        "Each screen = one `page.tsx` under `src/app/`. Include persistent navigation (sidebar/topnav). "
+        "All components are interactive: filters, search, sort, modals, tabs, toggles via useState. "
+        "Use Tailwind CSS for styling. Add animations (fade-in, slide, hover states). "
+        "Import dummy data from `src/data/`. Responsive, mobile-first layout."
     ),
     "config": (
-        "Create project configuration/manifests needed for Vercel deploy: package.json scripts, "
-        "Next.js config, tsconfig, env example placeholders, and optional vercel.json."
+        "Create project config for Vercel deploy: package.json (with all dependencies + build scripts), "
+        "next.config.ts, tsconfig.json, tailwind.config.ts, postcss.config.mjs, "
+        "src/app/globals.css (Tailwind directives + custom properties), src/app/layout.tsx (root layout with "
+        "font imports and navigation shell). No .env needed — no backend."
     ),
-    "migrations": (
-        "If a durable data model is explicitly required, add lightweight SQL/schema files under `db/migrations/` "
-        "or `sql/`; otherwise return an empty files array for this phase."
-    ),
+    "migrations": ("Return an empty files array. This is a frontend-only prototype with no database."),
 }
 
 
@@ -178,9 +185,7 @@ def _serialize_code_snapshot(artifact: Any) -> str:
         return "(no previous code)"
     parts = []
     for f in files[:30]:
-        parts.append(
-            f"### {f.get('path', '?')}\n```{f.get('language', '')}\n{f.get('content', '')}\n```"
-        )
+        parts.append(f"### {f.get('path', '?')}\n```{f.get('language', '')}\n{f.get('content', '')}\n```")
     return "\n\n".join(parts)
 
 
@@ -206,11 +211,7 @@ def _serialize_generated_file_index(files: list[dict[str, Any]] | None) -> str:
         return "(none yet)"
 
     paths = sorted(
-        {
-            str(file_data.get("path", "")).strip()
-            for file_data in files
-            if str(file_data.get("path", "")).strip()
-        }
+        {str(file_data.get("path", "")).strip() for file_data in files if str(file_data.get("path", "")).strip()}
     )
     if not paths:
         return "(none yet)"
@@ -228,10 +229,7 @@ def _serialize_design_codegen_context(design_spec: Any) -> str:
     if not isinstance(design_spec, dict):
         return "(none)"
 
-    context = (
-        design_spec.get("design_codegen_context")
-        or design_spec.get("metadata", {}).get("design_codegen_context")
-    )
+    context = design_spec.get("design_codegen_context") or design_spec.get("metadata", {}).get("design_codegen_context")
     if not isinstance(context, dict):
         return "(none)"
 
@@ -294,9 +292,7 @@ def build_prompts(
     security_feedback_block = ""
     previous_code_block = ""
     if feedback:
-        security_feedback_block = (
-            f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
-        )
+        security_feedback_block = f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
         previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
         previous_code_block = f"\n## Previous Code Snapshot\n{previous_code}\n"
 

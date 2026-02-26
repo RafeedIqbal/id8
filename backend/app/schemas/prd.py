@@ -3,7 +3,10 @@
 Used by the ``GeneratePRD`` handler to parse and validate the structured
 JSON produced by the model.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -32,3 +35,4 @@ class PrdContent(BaseModel):
     scope_boundaries: ScopeBoundaries
     entity_list: list[Entity]
     non_goals: list[str]
+    dummy_data_spec: list[dict[str, Any]] = Field(default_factory=list)

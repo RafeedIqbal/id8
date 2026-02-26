@@ -3,34 +3,65 @@
 Used by the ``GenerateTechPlan`` orchestrator node to produce a structured
 JSON technical plan from the approved PRD and design artifacts.
 """
+
 from __future__ import annotations
 
 import json
 from typing import Any
 
 _SYSTEM_PROMPT = """\
-You are a senior software architect.  Given an approved PRD and design
-specification, produce a detailed Technical Implementation Plan as a JSON
-object that a development team can follow to build the project.
+You are a senior frontend architect. Produce a Technical Plan for a
+**frontend-only Next.js prototype** deploying on Vercel. Zero backend.
 
-The JSON object MUST contain exactly these top-level keys:
+All data is hardcoded dummy data. No API routes, no database, no server-side logic. The app must run out of the box.
 
-1. **folder_structure** — a nested dict representing the project directory tree.
-   Keys are directory/file names, values are either nested dicts (subdirectories)
-   or short description strings (files).
-2. **database_schema** — a dict where keys are table names and values are dicts
-   describing columns, types, constraints, and relationships.
-3. **api_routes** — an array of objects, each with "method" (HTTP verb),
-   "path" (URL pattern), and "description" (what it does).
-4. **component_hierarchy** — a nested dict representing the frontend component
-   tree.  Keys are component names, values are nested dicts (children) or
-   description strings (leaf components).
-5. **dependencies** — an array of objects, each with "name" (package name)
-   and "version" (version constraint string, e.g. "^2.0.0").
-6. **deployment_config** — a dict describing infrastructure requirements,
-   CI/CD, environments, and rollback strategy.
+Return a single JSON object with exactly these keys:
 
-Return ONLY the JSON object — no markdown fences, no preamble, no commentary.
+{
+  "folder_structure": {
+    "src/": {
+      "app/": {"page.tsx": "landing/home page", "(routes)/": {"[route]/page.tsx": "description"}},
+      "components/": {"ui/": "reusable UI primitives", "layout/": "nav, sidebar, footer"},
+      "data/": "hardcoded dummy data files (typed arrays of mock objects)",
+      "lib/": "utility helpers, cn(), formatters",
+      "types/": "TypeScript interfaces for all entities"
+    }
+  },
+  "routing": [
+    {"path": "/", "component": "HomePage", "description": "string"}
+  ],
+  "component_hierarchy": {
+    "RootLayout": {
+      "Navigation": "persistent sidebar/topnav",
+      "children": {"PageComponent": {"SubComponent": "description"}}
+    }
+  },
+  "dummy_data_plan": [
+    {"file": "src/data/users.ts", "entity": "User", "count": 10, "fields": ["id","name","email","avatar","role"]}
+  ],
+  "dependencies": [
+    {"name": "string", "version": "string", "reason": "string"}
+  ],
+  "styling_strategy": {
+    "framework": "tailwindcss",
+    "animations": "framer-motion or CSS transitions",
+    "icons": "lucide-react",
+    "fonts": "Google Font name"
+  }
+}
+
+Rules:
+- folder_structure: Next.js App Router under src/app/. One page.tsx per route. Shared layouts.
+- routing: every screen from design spec maps to a route. All client-side navigation.
+- component_hierarchy: nested dict. Leaf values are short descriptions.
+- dummy_data_plan: typed mock data files. Realistic sample counts (5-20 items). Include relationships.
+- dependencies: only frontend packages. No backend libs. Include version + reason.
+  MUST include: next, react, react-dom, tailwindcss, typescript.
+  Recommended: framer-motion (animations), lucide-react (icons), clsx or tailwind-merge (styling).
+- styling_strategy: Tailwind CSS is required. Specify animation library, icon set, font choice.
+- NO database_schema, NO api_routes, NO server deployment config.
+
+Return ONLY JSON.
 """
 
 _USER_PROMPT = """\
