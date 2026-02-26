@@ -120,8 +120,14 @@ class SupabaseClient:
     # ------------------------------------------------------------------
 
     async def list_projects(self) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = await self._request("GET", "/v1/projects")
-        return result
+        result = await self._request("GET", "/v1/projects")
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
+        if isinstance(result, dict):
+            projects = result.get("projects")
+            if isinstance(projects, list):
+                return [item for item in projects if isinstance(item, dict)]
+        raise SupabaseError("Unexpected response shape from GET /v1/projects")
 
     async def get_project(self, ref: str) -> dict[str, Any]:
         result: dict[str, Any] = await self._request("GET", f"/v1/projects/{ref}")
@@ -202,8 +208,25 @@ class SupabaseClient:
         Only the ``anon`` key should be used in publishable configs.
         The ``service_role`` key must stay backend-only.
         """
-        keys: list[dict[str, Any]] = await self._request("GET", f"/v1/projects/{ref}/api-keys")
-        return {str(item["name"]): str(item["api_key"]) for item in keys}
+        payload = await self._request("GET", f"/v1/projects/{ref}/api-keys")
+        if isinstance(payload, list):
+            entries = [item for item in payload if isinstance(item, dict)]
+        elif isinstance(payload, dict):
+            api_keys = payload.get("api_keys")
+            if isinstance(api_keys, list):
+                entries = [item for item in api_keys if isinstance(item, dict)]
+            else:
+                entries = []
+        else:
+            entries = []
+
+        parsed: dict[str, str] = {}
+        for item in entries:
+            name = item.get("name") or item.get("type")
+            key = item.get("api_key") or item.get("key")
+            if name and key:
+                parsed[str(name)] = str(key)
+        return parsed
 
     # ------------------------------------------------------------------
     # Migrations

@@ -179,11 +179,13 @@ _STITCH_RESPONSE = {
     ]
 }
 
-_STITCH_PROJECT_RESPONSE = {
-    "project": {
-        "id": "stitch-project-1",
-        "name": "id8-design",
-    }
+_STITCH_PROJECT_LIST_RESPONSE = {
+    "projects": [
+        {
+            "name": "projects/stitch-project-1",
+            "title": "A todo application with auth and tagging.",
+        }
+    ]
 }
 
 
@@ -407,7 +409,7 @@ class TestStitchMcpProvider:
             provider,
             "_call_stitch",
             new_callable=AsyncMock,
-            side_effect=[_STITCH_PROJECT_RESPONSE, _STITCH_RESPONSE],
+            side_effect=[_STITCH_PROJECT_LIST_RESPONSE, _STITCH_RESPONSE],
         ) as mock_call:
             output = await provider.generate(
                 prd_content=_VALID_PRD,
@@ -416,12 +418,13 @@ class TestStitchMcpProvider:
             )
 
         assert mock_call.await_count == 2
-        get_project_call = mock_call.await_args_list[0].kwargs
+        list_projects_call = mock_call.await_args_list[0].kwargs
         generate_call = mock_call.await_args_list[1].kwargs
-        assert get_project_call["tool"] == "get_project"
+        assert list_projects_call["tool"] == "list_projects"
         assert generate_call["tool"] == "generate_screen_from_text"
-        assert generate_call["params"]["project_id"] == "stitch-project-1"
-        assert generate_call["params"]["model_id"] == "gemini_3_flash"
+        assert generate_call["params"]["projectId"] == "stitch-project-1"
+        assert generate_call["params"]["modelId"] == "GEMINI_3_FLASH"
+        assert generate_call["params"]["deviceType"] == "DESKTOP"
         assert output.metadata["provider"] == "stitch_mcp"
         assert len(output.screens) == 1
         assert output.screens[0].name == "Home"
@@ -447,9 +450,10 @@ class TestStitchMcpProvider:
             output = await provider.regenerate(previous=previous, feedback=feedback, auth=auth)
 
         call_kwargs = mock_call.call_args.kwargs
-        assert call_kwargs["tool"] == "generate_screen_from_text"
-        assert call_kwargs["params"]["project_id"] == "stitch-project-existing"
-        assert call_kwargs["params"]["model_id"] == "gemini_3_flash"
+        assert call_kwargs["tool"] == "edit_screens"
+        assert call_kwargs["params"]["projectId"] == "stitch-project-existing"
+        assert call_kwargs["params"]["modelId"] == "GEMINI_3_FLASH"
+        assert call_kwargs["params"]["selectedScreenIds"] == ["screen-1"]
         assert output.metadata["feedback_text"] == "Adjust header"
 
 
@@ -459,7 +463,9 @@ class TestStitchToolInventory:
         assert "create_project" in tool_names
         assert "generate_screen_from_text" in tool_names
         assert "list_screens" in tool_names
-        assert len(STITCH_TOOLS) == 6
+        assert "edit_screens" in tool_names
+        assert "apply_design_system" in tool_names
+        assert len(STITCH_TOOLS) == 14
 
 
 # ---------------------------------------------------------------------------

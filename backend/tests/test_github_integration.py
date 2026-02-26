@@ -5,13 +5,12 @@ API calls are made.
 """
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from app.github.auth import GitHubAuth
 from app.github.client import (
@@ -27,18 +26,17 @@ from app.github.client import (
     MergeResult,
     PrInfo,
     RepoInfo,
-    _generate_github_app_jwt,
     _parse_owner_repo,
 )
 from app.orchestrator.handlers.prepare_pr import (
     PreparePRHandler,
     _build_pr_title,
     _create_project_repo,
+    _ensure_pull_request,
     _find_closed_pull_request,
     _generate_repo_name,
     _run_github_flow,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,6 +846,40 @@ async def test_find_closed_pull_request_returns_merged_pr_when_present() -> None
     assert result is not None
     assert result.number == 3
     assert result.merged is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_pull_request_uses_owner_prefixed_head() -> None:
+    client = MagicMock()
+    client.list_pull_requests = AsyncMock(return_value=[])
+    client.create_pull_request = AsyncMock(
+        return_value=PrInfo(
+            number=17,
+            html_url="https://github.com/acme/repo/pull/17",
+            state="open",
+            head_sha="head-sha",
+            title="feat(id8): test",
+        )
+    )
+
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {}
+    ctx.db = MagicMock()
+
+    with patch("app.orchestrator.handlers.prepare_pr.emit_audit_event", new=AsyncMock()):
+        await _ensure_pull_request(
+            client,
+            "acme",
+            "repo",
+            "id8/run-123",
+            base="main",
+            ctx=ctx,
+        )
+
+    assert client.create_pull_request.await_count == 1
+    assert client.create_pull_request.await_args.kwargs["head"] == "acme:id8/run-123"
 
 
 # ---------------------------------------------------------------------------

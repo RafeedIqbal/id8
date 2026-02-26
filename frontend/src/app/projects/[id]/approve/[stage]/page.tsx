@@ -30,6 +30,11 @@ type DesignScreen = {
   components: Array<{ id: string; name: string }>;
 };
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 function extractDesignScreens(artifact?: ProjectArtifact): DesignScreen[] {
   if (!artifact || artifact.artifactType !== "design_spec") return [];
   const rawScreens = artifact.content?.screens;
@@ -63,6 +68,52 @@ function extractDesignScreens(artifact?: ProjectArtifact): DesignScreen[] {
   return screens;
 }
 
+function extractDesignMetadata(artifact?: ProjectArtifact): Record<string, unknown> {
+  if (!artifact || artifact.artifactType !== "design_spec") return {};
+  const content = asRecord(artifact.content);
+  if (!content) return {};
+  const meta = asRecord(content.__design_metadata) ?? asRecord(content.metadata) ?? asRecord(content.provider_metadata);
+  return meta ?? {};
+}
+
+function extractStitchProjectUrl(artifact?: ProjectArtifact): string | null {
+  const meta = extractDesignMetadata(artifact);
+  const direct = meta.stitch_project_url ?? meta.stitch_url ?? meta.project_url;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const projectId = meta.stitch_project_id;
+  if (typeof projectId === "string" && projectId.trim()) {
+    return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId.trim())}`;
+  }
+  return null;
+}
+
+function extractStitchSuggestions(artifact?: ProjectArtifact): string[] {
+  const meta = extractDesignMetadata(artifact);
+  const fromMeta = Array.isArray(meta.stitch_suggestions)
+    ? meta.stitch_suggestions.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    : [];
+  if (fromMeta.length > 0) return fromMeta;
+
+  // Backward-compatible fallback in case provider metadata is nested.
+  const providerMeta = asRecord(meta.provider_metadata);
+  const nested = providerMeta?.stitch_suggestions;
+  if (!Array.isArray(nested)) return [];
+  return nested.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+}
+
+function isTransientStitchError(raw: string): boolean {
+  const text = raw.toLowerCase();
+  return (
+    text.includes("timed out") ||
+    text.includes("timeout") ||
+    text.includes("connection failed") ||
+    text.includes("connection reset") ||
+    text.includes("connection closed") ||
+    text.includes("service unavailable") ||
+    text.includes("http 503")
+  );
+}
+
 function DesignFeedbackPanel({
   projectId,
   artifact,
@@ -74,28 +125,43 @@ function DesignFeedbackPanel({
   const [selectedScreenId, setSelectedScreenId] = useState<string>("");
   const [selectedComponentId, setSelectedComponentId] = useState<string>("");
   const [feedbackText, setFeedbackText] = useState("");
+  const [lastSubmittedText, setLastSubmittedText] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   const screens = useMemo(() => extractDesignScreens(artifact), [artifact]);
+  const stitchSuggestions = useMemo(() => extractStitchSuggestions(artifact), [artifact]);
+  const stitchProjectUrl = useMemo(() => extractStitchProjectUrl(artifact), [artifact]);
   const selectedScreen = screens.find((screen) => screen.id === selectedScreenId);
   const components = selectedScreen?.components ?? [];
 
   const errorText = feedback.isError ? (feedback.error as Error).message : "";
+  const transientStitchError = isTransientStitchError(errorText);
   const needsStitchConfig =
     errorText.toLowerCase().includes("stitch") ||
     errorText.toLowerCase().includes("credentials");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!feedbackText.trim()) return;
+  async function submitFeedback(text: string) {
+    const normalized = text.trim();
+    if (!normalized) return;
     await feedback.mutateAsync({
-      feedbackText: feedbackText.trim(),
+      feedbackText: normalized,
       targetScreenId: selectedScreenId || undefined,
       targetComponentId: selectedComponentId || undefined,
     });
     setSubmitted(true);
+    setLastSubmittedText(normalized);
     setFeedbackText("");
     setSelectedComponentId("");
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await submitFeedback(feedbackText);
+  }
+
+  async function handleSuggestionClick(suggestion: string) {
+    setFeedbackText(suggestion);
+    await submitFeedback(suggestion);
   }
 
   return (
@@ -106,6 +172,45 @@ function DesignFeedbackPanel({
           Regenerate design with targeted feedback before approval.
         </p>
       </div>
+
+      <div className="text-xs text-text-2 bg-surface-2 border border-border-1 rounded-lg p-3">
+        Stitch MCP generations can take a few minutes. Submit once, then wait for the updated artifact.
+        {" "}
+        Avoid repeated retries while a request is in progress.
+      </div>
+
+      {stitchProjectUrl && (
+        <a
+          href={stitchProjectUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+        >
+          Open current design in Stitch
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M7 17L17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </a>
+      )}
+
+      {stitchSuggestions.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-1">Stitch Suggestions</div>
+          <div className="space-y-2">
+            {stitchSuggestions.map((suggestion, idx) => (
+              <button
+                key={`${idx}-${suggestion}`}
+                type="button"
+                onClick={() => handleSuggestionClick(suggestion)}
+                disabled={feedback.isPending}
+                className="w-full text-left text-xs text-text-2 bg-surface-2 border border-border-1 rounded-lg px-3 py-2 hover:border-accent/40 hover:text-text-1 disabled:opacity-60"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
@@ -163,7 +268,12 @@ function DesignFeedbackPanel({
 
       {submitted && !feedback.isError && (
         <div className="text-xs text-success bg-success-bg border border-success-dim rounded-lg p-2.5">
-          Feedback submitted. A new design artifact version was generated.
+          Change request submitted:
+          {" "}
+          <span className="font-mono-display text-success">
+            {lastSubmittedText || "feedback"}
+          </span>
+          . The refreshed design artifact will appear once Stitch completes generation.
         </div>
       )}
 
@@ -182,6 +292,12 @@ function DesignFeedbackPanel({
               or OAuth env vars on backend, then restart API/worker.
             </p>
           </div>
+        </div>
+      )}
+
+      {transientStitchError && (
+        <div className="text-xs text-warning bg-warning-bg border border-warning-dim rounded-lg p-3">
+          Stitch may still complete this generation even if the connection dropped. Check the Stitch project, wait a few minutes, then refresh artifacts before resubmitting.
         </div>
       )}
     </div>

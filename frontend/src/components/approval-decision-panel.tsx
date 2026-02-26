@@ -136,6 +136,9 @@ export function ApprovalDecisionPanel({
               in backend <span className="font-mono-display">.env</span>, then restart API/worker.
             </div>
           )}
+          <p className="text-xs text-text-3">
+            After PRD approval, Stitch design generation may take a few minutes. Submit once and wait for the design artifact to refresh.
+          </p>
         </div>
       )}
 

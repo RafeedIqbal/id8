@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import type { ProjectArtifact } from "@/types/domain";
 import { cn } from "@/lib/utils";
 import { isRecord, isString, safeString, safeArray, safeRecord } from "@/lib/artifact-guards";
@@ -18,6 +19,44 @@ interface Screen {
     props?: Record<string, unknown>;
   }>;
   assets?: string[];
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function isImageAsset(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("image") ||
+    normalized.includes(".png") ||
+    normalized.includes(".jpg") ||
+    normalized.includes(".jpeg") ||
+    normalized.includes(".webp") ||
+    normalized.includes(".gif")
+  );
+}
+
+function extractStitchProjectUrl(meta: Record<string, unknown>): string | null {
+  const direct = safeString(meta.stitch_project_url) ?? safeString(meta.stitch_url) ?? safeString(meta.project_url);
+  if (direct && direct.trim()) return direct.trim();
+  const projectId = safeString(meta.stitch_project_id);
+  if (projectId && projectId.trim()) {
+    return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId.trim())}`;
+  }
+  return null;
+}
+
+function extractSuggestions(meta: Record<string, unknown>): string[] {
+  const raw = safeArray(meta.stitch_suggestions).filter(isString).map((s) => s.trim()).filter(Boolean);
+  if (raw.length > 0) return raw;
+  const nested = safeRecord(meta.provider_metadata);
+  return safeArray(nested?.stitch_suggestions).filter(isString).map((s) => s.trim()).filter(Boolean);
 }
 
 function toScreen(raw: unknown): Screen | null {
@@ -45,9 +84,13 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
   const designMeta = c ? (safeRecord(c.__design_metadata) ?? safeRecord(c.metadata) ?? safeRecord(c.provider_metadata) ?? {}) : {};
   const provider = c ? (safeString(designMeta.provider_used) ?? safeString(designMeta.provider) ?? safeString(c.provider)) : undefined;
   const providerMeta = designMeta;
+  const stitchProjectUrl = extractStitchProjectUrl(designMeta);
+  const suggestions = extractSuggestions(designMeta);
 
   const [selectedIdx, setSelectedIdx] = useState(0);
   const selected = screens[selectedIdx];
+  const selectedAssets = safeArray(selected?.assets, isString);
+  const imageAssets = selectedAssets.filter((asset) => isHttpUrl(asset) && isImageAsset(asset));
 
   if (!c) {
     return <RawJsonInspector data={artifact.content} warning="Artifact content is not a valid object." />;
@@ -59,6 +102,28 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
       {provider && (
         <div className="mb-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs font-mono-display text-text-2">
           Provider: <span className="text-accent">{provider}</span>
+        </div>
+      )}
+      {(stitchProjectUrl || suggestions.length > 0) && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 text-xs">
+          {stitchProjectUrl && (
+            <a
+              href={stitchProjectUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-accent hover:underline"
+            >
+              Open in Stitch
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M7 17L17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </a>
+          )}
+          {suggestions.length > 0 && (
+            <span className="text-text-2 bg-surface-2 border border-border-1 rounded-md px-2 py-1">
+              Stitch suggestions: {suggestions.length}
+            </span>
+          )}
         </div>
       )}
 
@@ -135,17 +200,57 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
               </div>
             )}
 
+            {imageAssets.length > 0 && (
+              <div>
+                <h4 className="text-xs font-mono-display text-text-2 tracking-widest uppercase mb-3">
+                  Preview
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {imageAssets.map((asset, i) => (
+                    <a
+                      key={`${asset}-${i}`}
+                      href={asset}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block rounded-lg border border-border-1 overflow-hidden bg-surface-2"
+                    >
+                      <Image
+                        src={asset}
+                        alt={`${selected?.name ?? "Screen"} preview ${i + 1}`}
+                        width={1024}
+                        height={704}
+                        unoptimized
+                        className="w-full h-44 object-cover"
+                      />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Assets */}
-            {selected?.assets && selected.assets.length > 0 && (
+            {selectedAssets.length > 0 && (
               <div>
                 <h4 className="text-xs font-mono-display text-text-2 tracking-widest uppercase mb-3">
                   Assets
                 </h4>
                 <div className="flex flex-wrap gap-2">
-                  {selected.assets.map((asset, i) => (
-                    <span key={i} className="inline-flex px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-text-1 font-mono-display">
-                      {asset}
-                    </span>
+                  {selectedAssets.map((asset, i) => (
+                    isHttpUrl(asset) ? (
+                      <a
+                        key={i}
+                        href={asset}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-accent font-mono-display hover:underline"
+                      >
+                        {asset}
+                      </a>
+                    ) : (
+                      <span key={i} className="inline-flex px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-text-1 font-mono-display">
+                        {asset}
+                      </span>
+                    )
                   ))}
                 </div>
               </div>

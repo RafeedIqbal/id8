@@ -528,7 +528,7 @@ async def _ensure_pull_request(
     pr_info = await client.create_pull_request(
         owner,
         repo,
-        head=branch_name,
+        head=f"{owner}:{branch_name}",
         base=base,
         title=title,
         body=body,

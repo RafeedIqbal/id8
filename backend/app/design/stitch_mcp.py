@@ -1,7 +1,7 @@
 """Stitch MCP design provider (primary).
 
 Communicates with the Stitch MCP endpoint to generate and iterate on
-UI designs.  Handles authentication, tool discovery, and error mapping.
+UI designs. Handles authentication, tool discovery, and error mapping.
 """
 from __future__ import annotations
 
@@ -29,22 +29,55 @@ logger = logging.getLogger("id8.design.stitch_mcp")
 
 _DEFAULT_ENDPOINT = "https://stitch.googleapis.com/mcp"
 _REQUEST_TIMEOUT = 120  # seconds
-_DEFAULT_STITCH_MODEL_ID = "gemini_3_flash"
+_DEFAULT_STITCH_MODEL_ID = "GEMINI_3_FLASH"
+_DEFAULT_DEVICE_TYPE = "DESKTOP"
 
 # ---------------------------------------------------------------------------
 # Canonical Stitch MCP tool inventory
 # ---------------------------------------------------------------------------
 
 STITCH_TOOLS: list[dict[str, Any]] = [
-    {"name": "create_project", "params": ["name"], "description": "Create a new Stitch project"},
+    {"name": "create_project", "params": ["title"], "description": "Create a new Stitch project"},
+    {"name": "get_project", "params": ["name"], "description": "Get a Stitch project by resource name"},
+    {"name": "delete_project", "params": ["name"], "description": "Delete a Stitch project"},
     {"name": "list_projects", "params": ["filter"], "description": "List Stitch projects"},
-    {"name": "list_screens", "params": ["project_id"], "description": "List screens in a project"},
-    {"name": "get_project", "params": ["name"], "description": "Get project details by name"},
-    {"name": "get_screen", "params": ["project_id", "screen_id"], "description": "Get a specific screen"},
+    {"name": "list_screens", "params": ["projectId"], "description": "List screens in a project"},
+    {
+        "name": "get_screen",
+        "params": ["name", "projectId", "screenId"],
+        "description": "Get a specific screen in a project",
+    },
     {
         "name": "generate_screen_from_text",
-        "params": ["project_id", "prompt", "model_id"],
+        "params": ["projectId", "prompt", "deviceType", "modelId"],
         "description": "Generate a screen from a text prompt",
+    },
+    {
+        "name": "upload_screens_from_images",
+        "params": ["projectId", "images"],
+        "description": "Upload images as project screens",
+    },
+    {
+        "name": "edit_screens",
+        "params": ["projectId", "selectedScreenIds", "prompt", "deviceType", "modelId"],
+        "description": "Edit one or more existing screens",
+    },
+    {
+        "name": "generate_variants",
+        "params": ["projectId", "selectedScreenIds", "prompt", "variantOptions", "deviceType", "modelId"],
+        "description": "Generate variants for existing screens",
+    },
+    {
+        "name": "create_design_system",
+        "params": ["designSystem", "projectId"],
+        "description": "Create a design system",
+    },
+    {"name": "update_design_system", "params": ["designSystem"], "description": "Update a design system"},
+    {"name": "list_design_systems", "params": ["projectId"], "description": "List design systems"},
+    {
+        "name": "apply_design_system",
+        "params": ["projectId", "selectedScreenIds", "assetId"],
+        "description": "Apply a design system to screens",
     },
 ]
 
@@ -75,14 +108,17 @@ class StitchMcpProvider(DesignProvider):
             auth=auth,
             suggested_name=_project_name_from_prd(prd_content),
         )
+        model_id = _resolve_model_id(constraints)
+        device_type = _resolve_device_type(constraints)
 
         start = time.monotonic()
         raw = await self._call_stitch(
             tool="generate_screen_from_text",
             params={
-                "project_id": project_id,
+                "projectId": project_id,
                 "prompt": prompt,
-                "model_id": _DEFAULT_STITCH_MODEL_ID,
+                "modelId": model_id,
+                "deviceType": device_type,
             },
             auth=auth,
         )
@@ -95,7 +131,9 @@ class StitchMcpProvider(DesignProvider):
             "generation_time_ms": elapsed_ms,
             "usable_tools": STITCH_TOOLS,
             "stitch_project_id": project_id,
-            "stitch_model_id": _DEFAULT_STITCH_MODEL_ID,
+            "stitch_project_url": _project_url(project_id),
+            "stitch_model_id": model_id,
+            "stitch_device_type": device_type,
             **auth.redacted_summary(),
         })
         return output
@@ -117,15 +155,22 @@ class StitchMcpProvider(DesignProvider):
             suggested_name="id8-design",
             existing_project_id=existing_project_id or None,
         )
+        selected_screen_ids = _selected_screen_ids(previous, feedback.target_screen_id)
+        model_id = _resolve_model_id(previous.metadata)
+        device_type = _resolve_device_type(previous.metadata)
+        tool = "edit_screens" if selected_screen_ids else "generate_screen_from_text"
         params: dict[str, Any] = {
-            "project_id": project_id,
+            "projectId": project_id,
             "prompt": prompt,
-            "model_id": _DEFAULT_STITCH_MODEL_ID,
+            "modelId": model_id,
+            "deviceType": device_type,
         }
+        if selected_screen_ids:
+            params["selectedScreenIds"] = selected_screen_ids
 
         start = time.monotonic()
         raw = await self._call_stitch(
-            tool="generate_screen_from_text",
+            tool=tool,
             params=params,
             auth=auth,
         )
@@ -139,7 +184,11 @@ class StitchMcpProvider(DesignProvider):
             "feedback_text": feedback.feedback_text,
             "usable_tools": STITCH_TOOLS,
             "stitch_project_id": project_id,
-            "stitch_model_id": _DEFAULT_STITCH_MODEL_ID,
+            "stitch_project_url": _project_url(project_id),
+            "stitch_model_id": model_id,
+            "stitch_device_type": device_type,
+            "stitch_edit_tool": tool,
+            "selected_screen_ids": selected_screen_ids,
             **auth.redacted_summary(),
         })
         return output
@@ -234,24 +283,26 @@ class StitchMcpProvider(DesignProvider):
     ) -> str:
         """Return a valid Stitch project_id, creating one when needed."""
         if existing_project_id:
-            return existing_project_id
+            normalized = _normalize_project_id(existing_project_id)
+            if normalized:
+                return normalized
 
         try:
-            existing = await self._call_stitch(
-                tool="get_project",
-                params={"name": suggested_name},
+            listed = await self._call_stitch(
+                tool="list_projects",
+                params={},
                 auth=auth,
             )
-            existing_id = _extract_project_id(existing)
+            existing_id = _find_project_id_by_title(listed, suggested_name)
             if existing_id:
                 return existing_id
         except StitchRuntimeError:
-            # Not found or unsupported lookup; fall through to create.
+            # If listing fails, fall through to project creation.
             pass
 
         created = await self._call_stitch(
             tool="create_project",
-            params={"name": suggested_name},
+            params={"title": suggested_name},
             auth=auth,
         )
         created_id = _extract_project_id(created)
@@ -324,19 +375,42 @@ def _project_name_from_prd(prd_content: dict[str, Any]) -> str:
 
 
 def _extract_project_id(raw: dict[str, Any]) -> str:
+    return _extract_project_id_shallow(raw)
+
+
+def _extract_project_id_shallow(raw: dict[str, Any]) -> str:
     project = raw.get("project")
     data = raw.get("data")
     candidates: list[Any] = [
+        raw.get("projectId"),
         raw.get("project_id"),
         raw.get("id"),
+        project.get("projectId") if isinstance(project, dict) else None,
         project.get("project_id") if isinstance(project, dict) else None,
         project.get("id") if isinstance(project, dict) else None,
+        data.get("projectId") if isinstance(data, dict) else None,
         data.get("project_id") if isinstance(data, dict) else None,
         data.get("id") if isinstance(data, dict) else None,
     ]
     for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
+        if not isinstance(candidate, str):
+            continue
+        normalized = _normalize_project_id(candidate)
+        if normalized:
+            return normalized
+
+    resource_candidates: list[Any] = [
+        raw.get("name"),
+        project.get("name") if isinstance(project, dict) else None,
+        data.get("name") if isinstance(data, dict) else None,
+    ]
+    for candidate in resource_candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = _normalize_project_resource_name(candidate)
+        if normalized:
+            return normalized
+
     return ""
 
 
@@ -358,51 +432,433 @@ def _extract_error_text(raw: dict[str, Any]) -> str:
 
 def _parse_stitch_response(raw: dict[str, Any]) -> DesignOutput:
     """Parse a Stitch MCP response into a ``DesignOutput``."""
+    screens = _extract_screens(raw)
+    suggestions = _extract_suggestions(raw)
+    metadata: dict[str, Any] = {}
+    if suggestions:
+        metadata["stitch_suggestions"] = suggestions
+    return DesignOutput(screens=screens, metadata=metadata)
+
+
+def _normalize_project_id(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    if value.startswith("projects/"):
+        return value.split("/", 1)[1].strip()
+    return value
+
+
+def _normalize_project_resource_name(raw: str) -> str:
+    value = raw.strip()
+    if not value.startswith("projects/"):
+        return ""
+    return value.split("/", 1)[1].strip()
+
+
+def _normalize_screen_id(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    if "/screens/" in value:
+        return value.rsplit("/screens/", 1)[1].strip()
+    if value.startswith("screens/"):
+        return value.split("/", 1)[1].strip()
+    return value
+
+
+def _project_url(project_id: str) -> str:
+    return f"https://stitch.withgoogle.com/project/{project_id}"
+
+
+def _resolve_model_id(constraints: dict[str, Any]) -> str:
+    model_id = str(
+        constraints.get("modelId")
+        or constraints.get("model_id")
+        or constraints.get("stitch_model_id")
+        or _DEFAULT_STITCH_MODEL_ID
+    ).strip()
+    return model_id or _DEFAULT_STITCH_MODEL_ID
+
+
+def _resolve_device_type(constraints: dict[str, Any]) -> str:
+    device_type = str(
+        constraints.get("deviceType")
+        or constraints.get("device_type")
+        or constraints.get("stitch_device_type")
+        or _DEFAULT_DEVICE_TYPE
+    ).strip()
+    return device_type or _DEFAULT_DEVICE_TYPE
+
+
+def _selected_screen_ids(previous: DesignOutput, target_screen_id: str | None) -> list[str]:
+    if target_screen_id:
+        normalized = _normalize_screen_id(target_screen_id)
+        if normalized:
+            return [normalized]
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for screen in previous.screens:
+        normalized = _normalize_screen_id(screen.id)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        selected.append(normalized)
+    return selected
+
+
+def _find_project_id_by_title(raw: dict[str, Any], title: str) -> str:
+    wanted = title.strip().casefold()
+    if not wanted:
+        return ""
+
+    for project in _extract_projects(raw):
+        project_title = _extract_project_title(project)
+        if project_title and project_title.strip().casefold() == wanted:
+            project_id = _extract_project_id(project)
+            if project_id:
+                return project_id
+    return ""
+
+
+def _extract_project_title(raw: dict[str, Any]) -> str:
+    project = raw.get("project")
+    data = raw.get("data")
+    candidates: list[Any] = [
+        raw.get("title"),
+        raw.get("displayName"),
+        project.get("title") if isinstance(project, dict) else None,
+        project.get("displayName") if isinstance(project, dict) else None,
+        data.get("title") if isinstance(data, dict) else None,
+        data.get("displayName") if isinstance(data, dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _extract_projects(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    projects: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add_project(candidate: Any) -> None:
+        if not isinstance(candidate, dict):
+            return
+        marker = id(candidate)
+        if marker in seen:
+            return
+        seen.add(marker)
+        projects.append(candidate)
+
+    def from_value(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                from_value(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        if _extract_project_id_shallow(value):
+            add_project(value)
+
+        for key in ("projects", "data", "structuredContent", "project"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                from_value(child)
+
+        content = value.get("content")
+        if isinstance(content, dict):
+            from_value(content)
+        elif isinstance(content, list):
+            from_value(content)
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                from_value(parsed)
+
+    from_value(raw)
+    return projects
+
+
+def _extract_screens(raw: dict[str, Any]) -> list[Screen]:
+    raw_screens = _extract_raw_screen_objects(raw)
     screens: list[Screen] = []
 
-    # Stitch may return screens under various keys/shapes.
-    raw_screens: Any = []
-    if isinstance(raw.get("screens"), list):
-        raw_screens = raw.get("screens", [])
-    elif isinstance(raw.get("content"), dict):
-        raw_screens = raw.get("content", {}).get("screens", [])
-    elif isinstance(raw.get("data"), dict):
-        raw_screens = raw.get("data", {}).get("screens", [])
-    elif isinstance(raw.get("content"), list):
-        for item in raw.get("content", []):
-            if not isinstance(item, dict):
-                continue
-            text = item.get("text")
-            if not isinstance(text, str) or not text.strip():
-                continue
+    for i, raw_screen in enumerate(raw_screens):
+        screen = _screen_from_raw(raw_screen, i)
+        if screen is not None:
+            screens.append(screen)
+
+    return screens
+
+
+def _extract_raw_screen_objects(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    collected: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(candidate: dict[str, Any]) -> None:
+        marker = id(candidate)
+        if marker in seen:
+            return
+        seen.add(marker)
+        collected.append(candidate)
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        if _looks_like_screen(node):
+            add(node)
+
+        for key in (
+            "screens",
+            "screen",
+            "updatedScreens",
+            "generatedScreens",
+            "variants",
+            "data",
+            "structuredContent",
+            "design",
+            "output_components",
+            "outputComponents",
+            "content",
+        ):
+            child = node.get(key)
+            if isinstance(child, (dict, list)):
+                visit(child)
+
+        text = node.get("text")
+        if isinstance(text, str) and text.strip() and "{" in text:
             try:
                 parsed = json.loads(text)
             except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(parsed, dict) and isinstance(parsed.get("screens"), list):
-                raw_screens = parsed.get("screens", [])
-                break
+                return
+            visit(parsed)
 
-    if isinstance(raw_screens, list):
-        for i, rs in enumerate(raw_screens):
-            if not isinstance(rs, dict):
-                continue
-            components = []
-            for j, rc in enumerate(rs.get("components", [])):
-                if not isinstance(rc, dict):
-                    continue
-                components.append(ScreenComponent(
-                    id=rc.get("id", f"comp-{j}"),
-                    name=rc.get("name", f"Component {j}"),
-                    type=rc.get("type", "unknown"),
-                    properties=rc.get("properties", {}),
-                ))
-            screens.append(Screen(
-                id=rs.get("id", f"screen-{i}"),
-                name=rs.get("name", f"Screen {i}"),
-                description=rs.get("description", ""),
-                components=components,
-                assets=rs.get("assets", []),
-            ))
+    visit(raw)
+    return collected
 
-    return DesignOutput(screens=screens)
+
+def _looks_like_screen(candidate: dict[str, Any]) -> bool:
+    name = candidate.get("name")
+    if isinstance(name, str) and "/screens/" in name:
+        return True
+
+    if any(key in candidate for key in ("screenshot", "htmlCode", "figmaExport", "screenMetadata")):
+        return True
+
+    if isinstance(candidate.get("id"), str) and (
+        isinstance(candidate.get("components"), list)
+        or any(
+            key in candidate
+            for key in ("assets", "prompt", "deviceType", "screenType", "width", "height")
+        )
+    ):
+        return True
+
+    return False
+
+
+def _screen_from_raw(raw_screen: dict[str, Any], index: int) -> Screen | None:
+    raw_id_candidates = [
+        raw_screen.get("id"),
+        raw_screen.get("screenId"),
+        raw_screen.get("screen_id"),
+        raw_screen.get("name"),
+    ]
+
+    screen_id = ""
+    for candidate in raw_id_candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = _normalize_screen_id(candidate)
+        if normalized:
+            screen_id = normalized
+            break
+
+    if not screen_id:
+        screen_id = f"screen-{index + 1}"
+
+    raw_name = raw_screen.get("title") or raw_screen.get("name")
+    name = str(raw_name).strip() if isinstance(raw_name, str) else ""
+    if "/screens/" in name:
+        name = ""
+    if not name:
+        name = f"Screen {index + 1}"
+
+    description = ""
+    if isinstance(raw_screen.get("description"), str):
+        description = str(raw_screen["description"]).strip()
+    elif isinstance(raw_screen.get("prompt"), str):
+        description = str(raw_screen["prompt"]).strip()
+    else:
+        screen_metadata = raw_screen.get("screenMetadata")
+        if isinstance(screen_metadata, dict):
+            status_message = screen_metadata.get("statusMessage")
+            if isinstance(status_message, str):
+                description = status_message.strip()
+
+    components = _extract_components(raw_screen)
+    assets = _extract_assets(raw_screen)
+    return Screen(
+        id=screen_id,
+        name=name,
+        description=description,
+        components=components,
+        assets=assets,
+    )
+
+
+def _extract_components(raw_screen: dict[str, Any]) -> list[ScreenComponent]:
+    components: list[ScreenComponent] = []
+
+    raw_components = raw_screen.get("components")
+    if isinstance(raw_components, list):
+        for idx, raw_component in enumerate(raw_components):
+            if not isinstance(raw_component, dict):
+                continue
+            components.append(
+                ScreenComponent(
+                    id=str(raw_component.get("id", f"comp-{idx + 1}")),
+                    name=str(raw_component.get("name", f"Component {idx + 1}")),
+                    type=str(raw_component.get("type", "unknown")),
+                    properties=_as_string_key_dict(raw_component.get("properties")),
+                )
+            )
+        return components
+
+    screen_metadata = raw_screen.get("screenMetadata")
+    if not isinstance(screen_metadata, dict):
+        return components
+
+    raw_regions = screen_metadata.get("componentRegions")
+    if not isinstance(raw_regions, list):
+        return components
+
+    for idx, region in enumerate(raw_regions):
+        if not isinstance(region, dict):
+            continue
+        component_id = str(
+            region.get("id")
+            or region.get("componentId")
+            or f"comp-region-{idx + 1}"
+        )
+        component_name = str(
+            region.get("name")
+            or region.get("label")
+            or f"Component {idx + 1}"
+        )
+        component_type = str(
+            region.get("type")
+            or region.get("componentType")
+            or "region"
+        )
+        properties = {
+            key: value
+            for key, value in region.items()
+            if key not in {"id", "componentId", "name", "label", "type", "componentType"}
+        }
+        components.append(
+            ScreenComponent(
+                id=component_id,
+                name=component_name,
+                type=component_type,
+                properties=properties,
+            )
+        )
+    return components
+
+
+def _as_string_key_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _extract_assets(raw_screen: dict[str, Any]) -> list[str]:
+    assets: list[str] = []
+    seen: set[str] = set()
+
+    def add_asset(value: str) -> None:
+        candidate = value.strip()
+        if not candidate or candidate in seen:
+            return
+        seen.add(candidate)
+        assets.append(candidate)
+
+    raw_assets = raw_screen.get("assets")
+    if isinstance(raw_assets, list):
+        for item in raw_assets:
+            if isinstance(item, str):
+                add_asset(item)
+            elif isinstance(item, dict):
+                for key in ("downloadUrl", "name"):
+                    val = item.get(key)
+                    if isinstance(val, str):
+                        add_asset(val)
+
+    for key in ("screenshot", "htmlCode", "figmaExport"):
+        raw_file = raw_screen.get(key)
+        if isinstance(raw_file, str):
+            add_asset(raw_file)
+        elif isinstance(raw_file, dict):
+            for candidate_key in ("downloadUrl", "name"):
+                val = raw_file.get(candidate_key)
+                if isinstance(val, str):
+                    add_asset(val)
+
+    return assets
+
+
+def _extract_suggestions(raw: dict[str, Any]) -> list[str]:
+    suggestions: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        candidate = value.strip()
+        if not candidate or candidate in seen:
+            return
+        seen.add(candidate)
+        suggestions.append(candidate)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        suggestion = node.get("suggestion")
+        if isinstance(suggestion, str):
+            add(suggestion)
+
+        for key in ("output_components", "outputComponents", "content", "data", "structuredContent"):
+            child = node.get(key)
+            if isinstance(child, (dict, list)):
+                walk(child)
+
+        text = node.get("text")
+        if isinstance(text, str) and text.strip() and "{" in text:
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                return
+            walk(parsed)
+
+    walk(raw)
+    return suggestions

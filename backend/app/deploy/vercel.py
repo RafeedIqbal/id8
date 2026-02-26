@@ -202,6 +202,8 @@ class VercelClient:
             "POST",
             f"/v10/projects/{project_id}/env",
             body=env_entries,
+            # Keep repeated deploys idempotent: update existing keys if present.
+            params={"upsert": "true"},
         )
         logger.info(
             "Injected %d env var(s) into Vercel project %s: %s",

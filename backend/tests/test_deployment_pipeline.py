@@ -4,7 +4,6 @@ Vercel client, and DeployProduction handler.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,22 +18,19 @@ from app.deploy.supabase import (
 )
 from app.deploy.vercel import (
     VercelClient,
-    VercelDeployTimeoutError,
     VercelDeployment,
-    VercelError,
+    VercelDeployTimeoutError,
     VercelProject,
-    deploy_to_vercel,
     _deployment_from_json,
     _project_from_json,
+    deploy_to_vercel,
 )
 from app.orchestrator.handlers.deploy_production import (
     DeployProductionHandler,
     _extract_sql_files,
     _generate_db_pass,
     _health_check,
-    _project_name,
 )
-
 
 # ===========================================================================
 # secret_filter
@@ -128,6 +124,19 @@ class TestSupabaseClient:
         assert result["status"] == "ACTIVE_HEALTHY"
 
     @pytest.mark.asyncio
+    async def test_list_projects_accepts_wrapped_payload(self) -> None:
+        client = SupabaseClient(access_token="tok")
+        payload = {
+            "projects": [
+                {"id": "proj_1", "name": "my-app", "region": "us-east-1"},
+            ]
+        }
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=payload):
+            result = await client.list_projects()
+        assert len(result) == 1
+        assert result[0]["id"] == "proj_1"
+
+    @pytest.mark.asyncio
     async def test_wait_for_active_returns_immediately_when_healthy(self) -> None:
         client = SupabaseClient(access_token="tok")
         healthy = {"id": "ref", "name": "proj", "status": "ACTIVE_HEALTHY", "region": "us-east-1"}
@@ -137,7 +146,6 @@ class TestSupabaseClient:
 
     @pytest.mark.asyncio
     async def test_wait_for_active_raises_timeout(self) -> None:
-        import time
 
         client = SupabaseClient(access_token="tok")
         coming_up = {"id": "ref", "status": "COMING_UP"}
@@ -155,6 +163,20 @@ class TestSupabaseClient:
             {"name": "service_role", "api_key": "service-role-key-value"},
         ]
         with patch.object(client, "_request", new_callable=AsyncMock, return_value=keys_payload):
+            result = await client.get_api_keys("ref")
+        assert result["anon"] == "anon-key-value"
+        assert result["service_role"] == "service-role-key-value"
+
+    @pytest.mark.asyncio
+    async def test_get_api_keys_accepts_wrapped_payload(self) -> None:
+        client = SupabaseClient(access_token="tok")
+        payload = {
+            "api_keys": [
+                {"type": "anon", "key": "anon-key-value"},
+                {"type": "service_role", "key": "service-role-key-value"},
+            ]
+        }
+        with patch.object(client, "_request", new_callable=AsyncMock, return_value=payload):
             result = await client.get_api_keys("ref")
         assert result["anon"] == "anon-key-value"
         assert result["service_role"] == "service-role-key-value"
@@ -292,6 +314,7 @@ class TestVercelClient:
         keys_posted = {item["key"] for item in call_body}
         assert "NEXT_PUBLIC_SUPABASE_URL" in keys_posted
         assert "SERVICE_ROLE_SECRET" not in keys_posted
+        assert mock_req.call_args[1]["params"] == {"upsert": "true"}
 
     @pytest.mark.asyncio
     async def test_set_env_vars_skips_when_nothing_to_inject(self) -> None:
@@ -313,7 +336,6 @@ class TestVercelClient:
 
     @pytest.mark.asyncio
     async def test_poll_deployment_raises_timeout(self) -> None:
-        import time
 
         client = VercelClient("tok")
         building = VercelDeployment(
