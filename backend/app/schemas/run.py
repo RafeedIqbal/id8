@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import ModelProfile, ProjectStatus
 
@@ -27,4 +27,17 @@ class ProjectRun(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RunTimelineEvent(BaseModel):
+    event_type: str
+    from_node: str | None = None
+    to_node: str
+    outcome: str | None = None
+    created_at: datetime
+
+
+class ProjectRunDetail(ProjectRun):
+    timeline: list[RunTimelineEvent] = Field(default_factory=list)
+
+
 ProjectRunResponse = ProjectRun
+ProjectRunDetailResponse = ProjectRunDetail

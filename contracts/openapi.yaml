@@ -8,6 +8,16 @@ servers:
   - url: https://api.id8.local
 paths:
   /v1/projects:
+    get:
+      summary: List projects with latest run summaries
+      operationId: listProjects
+      responses:
+        '200':
+          description: Project list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
     post:
       summary: Create a project from a user prompt
       operationId: createProject
@@ -57,6 +67,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectRun'
+  /v1/projects/{projectId}/runs/latest:
+    get:
+      summary: Get latest run with timeline events
+      operationId: getLatestRun
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Latest run detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRunDetail'
+  /v1/design/tools:
+    get:
+      summary: List readable Stitch tool inventory for operator UI
+      operationId: listDesignTools
+      responses:
+        '200':
+          description: Tool inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesignToolsResponse'
   /v1/projects/{projectId}/design/generate:
     post:
       summary: Generate or regenerate design artifacts
@@ -216,6 +250,49 @@ components:
         - design
         - tech_plan
         - deploy
+    StitchAuthMethod:
+      type: string
+      enum:
+        - api_key
+        - oauth_access_token
+    StitchAuthPayload:
+      type: object
+      properties:
+        auth_method:
+          $ref: '#/components/schemas/StitchAuthMethod'
+        api_key:
+          type: string
+        oauth_token:
+          type: string
+        goog_user_project:
+          type: string
+    DesignTool:
+      type: object
+      properties:
+        name:
+          type: string
+        params:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+      required:
+        - name
+        - params
+        - description
+    DesignToolsResponse:
+      type: object
+      properties:
+        provider:
+          $ref: '#/components/schemas/DesignProvider'
+        usable_tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/DesignTool'
+      required:
+        - provider
+        - usable_tools
     CreateProjectRequest:
       type: object
       properties:
@@ -243,6 +320,8 @@ components:
         prompt_constraints:
           type: object
           additionalProperties: true
+        stitch_auth:
+          $ref: '#/components/schemas/StitchAuthPayload'
       required:
         - provider
         - model_profile
@@ -255,6 +334,8 @@ components:
           type: string
         feedback_text:
           type: string
+        stitch_auth:
+          $ref: '#/components/schemas/StitchAuthPayload'
       required:
         - feedback_text
     ApprovalRequest:
@@ -311,6 +392,40 @@ components:
         - status
         - created_at
         - updated_at
+    ProjectRunSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        current_node:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - status
+        - current_node
+        - updated_at
+    ProjectListItem:
+      allOf:
+        - $ref: '#/components/schemas/Project'
+        - type: object
+          properties:
+            latest_run:
+              $ref: '#/components/schemas/ProjectRunSummary'
+    ProjectListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectListItem'
+      required:
+        - items
     ProjectRun:
       type: object
       properties:
@@ -343,6 +458,35 @@ components:
         - current_node
         - created_at
         - updated_at
+    RunTimelineEvent:
+      type: object
+      properties:
+        event_type:
+          type: string
+        from_node:
+          type: string
+        to_node:
+          type: string
+        outcome:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - event_type
+        - to_node
+        - created_at
+    ProjectRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProjectRun'
+        - type: object
+          properties:
+            timeline:
+              type: array
+              items:
+                $ref: '#/components/schemas/RunTimelineEvent'
+          required:
+            - timeline
     ProjectArtifact:
       type: object
       properties:

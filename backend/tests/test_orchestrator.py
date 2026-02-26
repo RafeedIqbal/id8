@@ -348,42 +348,57 @@ class TestFullHappyPath:
     async def test_full_run_to_end_success(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project, seed_user: User
     ) -> None:
-        # Walk through all nodes with approvals
-        stages = [
-            (ApprovalStage.PRD, "WaitPRDApproval"),
-            (ApprovalStage.DESIGN, "WaitDesignApproval"),
-            (ApprovalStage.TECH_PLAN, "WaitTechPlanApproval"),
-            (ApprovalStage.DEPLOY, "WaitDeployApproval"),
-        ]
+        original_write_code = HANDLER_REGISTRY[NodeName.WRITE_CODE]
+        original_security_gate = HANDLER_REGISTRY[NodeName.SECURITY_GATE]
+        original_prepare_pr = HANDLER_REGISTRY[NodeName.PREPARE_PR]
+        original_deploy = HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION]
+        HANDLER_REGISTRY[NodeName.WRITE_CODE] = _WriteCodeSuccessHandler()
+        HANDLER_REGISTRY[NodeName.SECURITY_GATE] = _SecurityGatePassHandler()
+        HANDLER_REGISTRY[NodeName.PREPARE_PR] = _PreparePrSuccessHandler()
+        HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = _DeploySuccessHandler()
 
-        # First run parks at WaitPRDApproval
-        await run_orchestrator(seed_run.id, db)
-        await _seed_internal_design_pending(db, seed_run)
+        try:
+            # Walk through all nodes with approvals
+            stages = [
+                (ApprovalStage.PRD, "WaitPRDApproval"),
+                (ApprovalStage.DESIGN, "WaitDesignApproval"),
+                (ApprovalStage.TECH_PLAN, "WaitTechPlanApproval"),
+                (ApprovalStage.DEPLOY, "WaitDeployApproval"),
+            ]
 
-        for stage, expected_wait in stages:
-            await db.refresh(seed_run)
-            assert seed_run.current_node == expected_wait, (
-                f"Expected {expected_wait}, got {seed_run.current_node}"
-            )
-
-            approval = ApprovalEvent(
-                project_id=seed_run.project_id,
-                run_id=seed_run.id,
-                stage=stage,
-                decision="approved",
-                created_by=seed_user.id,
-            )
-            db.add(approval)
-            await db.flush()
-
+            # First run parks at WaitPRDApproval
             await run_orchestrator(seed_run.id, db)
+            await _seed_internal_design_pending(db, seed_run)
 
-        await db.refresh(seed_run)
-        assert seed_run.current_node == "EndSuccess"
-        assert seed_run.status == ProjectStatus.DEPLOYED
+            for stage, expected_wait in stages:
+                await db.refresh(seed_run)
+                assert seed_run.current_node == expected_wait, (
+                    f"Expected {expected_wait}, got {seed_run.current_node}"
+                )
 
-        await db.refresh(seed_project)
-        assert seed_project.status == ProjectStatus.DEPLOYED
+                approval = ApprovalEvent(
+                    project_id=seed_run.project_id,
+                    run_id=seed_run.id,
+                    stage=stage,
+                    decision="approved",
+                    created_by=seed_user.id,
+                )
+                db.add(approval)
+                await db.flush()
+
+                await run_orchestrator(seed_run.id, db)
+
+            await db.refresh(seed_run)
+            assert seed_run.current_node == "EndSuccess"
+            assert seed_run.status == ProjectStatus.DEPLOYED
+
+            await db.refresh(seed_project)
+            assert seed_project.status == ProjectStatus.DEPLOYED
+        finally:
+            HANDLER_REGISTRY[NodeName.WRITE_CODE] = original_write_code
+            HANDLER_REGISTRY[NodeName.SECURITY_GATE] = original_security_gate
+            HANDLER_REGISTRY[NodeName.PREPARE_PR] = original_prepare_pr
+            HANDLER_REGISTRY[NodeName.DEPLOY_PRODUCTION] = original_deploy
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +459,56 @@ class _LlmTelemetryHandler(NodeHandler):
                 latency_ms=321.0,
                 profile_used=ModelProfile.PRIMARY,
             ),
+        )
+
+
+class _PreparePrSuccessHandler(NodeHandler):
+    """Deterministic PreparePR replacement for orchestrator unit tests."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        return NodeResult(outcome="success")
+
+
+class _DeploySuccessHandler(NodeHandler):
+    """Deterministic DeployProduction replacement for orchestrator unit tests."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        return NodeResult(
+            outcome="passed",
+            artifact_data={"live_url": "https://example.test", "environment": "production"},
+        )
+
+
+class _WriteCodeSuccessHandler(NodeHandler):
+    """Deterministic WriteCode replacement to avoid real LLM calls in tests."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        return NodeResult(
+            outcome="success",
+            artifact_data={
+                "files": [
+                    {
+                        "path": "backend/app/main.py",
+                        "content": "from fastapi import FastAPI\n\napp = FastAPI()\n",
+                        "language": "python",
+                    }
+                ]
+            },
+        )
+
+
+class _SecurityGatePassHandler(NodeHandler):
+    """Deterministic SecurityGate replacement to avoid scanner subprocesses in tests."""
+
+    async def execute(self, ctx: RunContext) -> NodeResult:
+        return NodeResult(
+            outcome="passed",
+            artifact_data={
+                "findings": [],
+                "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0},
+                "scan_tools": ["stub"],
+                "passed": True,
+            },
         )
 
 

@@ -14,6 +14,15 @@ class CreateProjectRequest(BaseModel):
     constraints: dict[str, Any] | None = None
 
 
+class ProjectRunSummary(BaseModel):
+    id: uuid.UUID
+    status: ProjectStatus
+    current_node: str
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Project(BaseModel):
     id: uuid.UUID
     owner_user_id: uuid.UUID
@@ -25,6 +34,14 @@ class Project(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectListItem(Project):
+    latest_run: ProjectRunSummary | None = None
+
+
+class ProjectListResponse(BaseModel):
+    items: list[ProjectListItem]
 
 
 ProjectResponse = Project

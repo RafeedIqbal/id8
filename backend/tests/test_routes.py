@@ -1,4 +1,4 @@
-"""HTTP-layer tests for all 8 API endpoints.
+"""HTTP-layer tests for the MVP API endpoints.
 
 These tests use httpx.AsyncClient against the real FastAPI app
 with the DB dependency overridden to use a per-test transactional session
@@ -118,6 +118,47 @@ class TestCreateProject:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/projects — listProjects
+# ---------------------------------------------------------------------------
+
+
+class TestListProjects:
+    @pytest.mark.asyncio
+    async def test_happy_path(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        seed_user: User,
+        seed_project: Project,
+    ) -> None:
+        project_with_run = Project(owner_user_id=seed_user.id, initial_prompt="Build a billing service")
+        db.add(project_with_run)
+        await db.flush()
+
+        run = ProjectRun(
+            project_id=project_with_run.id,
+            status=ProjectStatus.PRD_DRAFT,
+            current_node="WaitPRDApproval",
+        )
+        db.add(run)
+        await db.flush()
+
+        resp = await client.get("/v1/projects")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        by_id = {item["id"]: item for item in items}
+
+        assert str(seed_project.id) in by_id
+        assert by_id[str(seed_project.id)]["latest_run"] is None
+
+        assert str(project_with_run.id) in by_id
+        latest_run = by_id[str(project_with_run.id)]["latest_run"]
+        assert latest_run is not None
+        assert latest_run["id"] == str(run.id)
+        assert latest_run["current_node"] == "WaitPRDApproval"
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/projects/{projectId} — getProject
 # ---------------------------------------------------------------------------
 
@@ -135,6 +176,39 @@ class TestGetProject:
         resp = await client.get(f"/v1/projects/{fake_id}")
         assert resp.status_code == 404
         assert "error" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/projects/{projectId}/runs/latest — getLatestRun
+# ---------------------------------------------------------------------------
+
+
+class TestGetLatestRun:
+    @pytest.mark.asyncio
+    async def test_happy_path(self, client: AsyncClient, seed_project: Project, seed_run: ProjectRun) -> None:
+        resp = await client.get(f"/v1/projects/{seed_project.id}/runs/latest")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == str(seed_run.id)
+        assert data["current_node"] == "IngestPrompt"
+        assert len(data["timeline"]) >= 1
+        assert data["timeline"][0]["to_node"] == "IngestPrompt"
+
+    @pytest.mark.asyncio
+    async def test_project_not_found(self, client: AsyncClient, seed_user: User) -> None:
+        resp = await client.get(f"/v1/projects/{uuid.uuid4()}/runs/latest")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_no_runs_for_project(
+        self, client: AsyncClient, db: AsyncSession, seed_user: User
+    ) -> None:
+        project = Project(owner_user_id=seed_user.id, initial_prompt="No run project")
+        db.add(project)
+        await db.flush()
+
+        resp = await client.get(f"/v1/projects/{project.id}/runs/latest")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +616,12 @@ class TestOpenAPIContract:
         assert "/v1/projects/{project_id}" not in spec["paths"]
 
         expected_operation_ids = {
+            ("/v1/projects", "get"): "listProjects",
             ("/v1/projects", "post"): "createProject",
             ("/v1/projects/{projectId}", "get"): "getProject",
             ("/v1/projects/{projectId}/runs", "post"): "createRun",
+            ("/v1/projects/{projectId}/runs/latest", "get"): "getLatestRun",
+            ("/v1/design/tools", "get"): "listDesignTools",
             ("/v1/projects/{projectId}/design/generate", "post"): "generateDesign",
             ("/v1/projects/{projectId}/design/feedback", "post"): "submitDesignFeedback",
             ("/v1/projects/{projectId}/approvals", "post"): "submitApproval",
@@ -565,10 +642,12 @@ class TestOpenAPIContract:
             "CreateRunRequest",
             "DesignGenerateRequest",
             "DesignFeedbackRequest",
+            "ProjectListResponse",
             "ApprovalRequest",
             "DeployRequest",
             "Project",
             "ProjectRun",
+            "ProjectRunDetail",
             "ProjectArtifact",
             "ArtifactResponse",
             "ApprovalEvent",

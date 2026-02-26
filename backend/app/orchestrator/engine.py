@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit_event import AuditEvent
 from app.models.enums import ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
@@ -90,7 +91,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
                 logger.exception("Cannot resolve skip transition for node=%s", node_name)
                 await _transition_to_failed(run, f"Skip transition failed for {node_name}", db)
                 return
-            await _advance(run, next_node, db)
+            await _advance(run, next_node, db, outcome=outcome)
             continue
 
         # ---- Execute handler ----------------------------------------------
@@ -152,7 +153,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 
         # Reset retry count on successful transition
         run.retry_count = 0
-        await _advance(run, next_node, db)
+        await _advance(run, next_node, db, outcome=node_result.outcome)
 
         # Wait nodes are explicit HITL pause points. Park immediately after
         # entering one so a single approval/rejection event is not reprocessed
@@ -171,8 +172,15 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _advance(run: ProjectRun, next_node: str, db: AsyncSession) -> None:
+async def _advance(
+    run: ProjectRun,
+    next_node: str,
+    db: AsyncSession,
+    *,
+    outcome: str | None = None,
+) -> None:
     """Move the run to *next_node* and sync project status."""
+    from_node = run.current_node
     run.current_node = next_node
     try:
         run.status = NODE_TO_PROJECT_STATUS[NodeName(next_node)]
@@ -182,6 +190,15 @@ async def _advance(run: ProjectRun, next_node: str, db: AsyncSession) -> None:
     run.last_error_code = None
     run.last_error_message = None
     await _update_project_status(run.project_id, next_node, db)
+    await _record_run_event(
+        db=db,
+        project_id=run.project_id,
+        run_id=run.id,
+        event_type="orchestrator.node_transition",
+        from_node=from_node,
+        to_node=next_node,
+        outcome=outcome,
+    )
     await db.flush()
     logger.info("Run %s advanced to node=%s", run.id, next_node)
 
@@ -198,12 +215,23 @@ async def _handle_terminal(run: ProjectRun, node_name: str, db: AsyncSession) ->
 
 async def _transition_to_failed(run: ProjectRun, error_message: str, db: AsyncSession) -> None:
     """Transition the run to EndFailed with resume metadata."""
+    from_node = run.current_node
     run.current_node = NodeName.END_FAILED
     run.status = ProjectStatus.FAILED
     run.last_error_code = "ORCHESTRATOR_ERROR"
     run.last_error_message = error_message
     run.updated_at = datetime.now(tz=UTC)
     await _update_project_status(run.project_id, NodeName.END_FAILED, db)
+    await _record_run_event(
+        db=db,
+        project_id=run.project_id,
+        run_id=run.id,
+        event_type="orchestrator.run_failed",
+        from_node=from_node,
+        to_node=NodeName.END_FAILED,
+        outcome="failure",
+        error=error_message,
+    )
     await db.flush()
     logger.error("Run %s failed: %s", run.id, error_message)
 
@@ -357,3 +385,35 @@ def _default_outcome_for_skip(node_name: str) -> str:
     if node_name in (NodeName.SECURITY_GATE, NodeName.DEPLOY_PRODUCTION):
         return "passed"
     return "success"
+
+
+async def _record_run_event(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    event_type: str,
+    to_node: str | NodeName,
+    from_node: str | NodeName | None = None,
+    outcome: str | None = None,
+    error: str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "run_id": str(run_id),
+        "to_node": str(to_node),
+    }
+    if from_node is not None:
+        payload["from_node"] = str(from_node)
+    if outcome:
+        payload["outcome"] = outcome
+    if error:
+        payload["error"] = error
+
+    db.add(
+        AuditEvent(
+            project_id=project_id,
+            actor_user_id=None,
+            event_type=event_type,
+            event_payload=payload,
+        )
+    )

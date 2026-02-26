@@ -3,13 +3,14 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Path
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.project import Project
+from app.models.project_run import ProjectRun
 from app.models.user import User
-from app.schemas.project import CreateProjectRequest, ProjectResponse
+from app.schemas.project import CreateProjectRequest, ProjectListItem, ProjectListResponse, ProjectResponse
 
 router = APIRouter(tags=["projects"])
 _SCAFFOLD_OWNER_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
@@ -43,6 +44,53 @@ async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(
     await db.commit()
     await db.refresh(project)
     return project
+
+
+@router.get("/projects", operation_id="listProjects", response_model=ProjectListResponse)
+async def list_projects(db: AsyncSession = Depends(get_db)) -> dict[str, list[ProjectListItem]]:
+    project_result = await db.execute(
+        select(Project).order_by(Project.updated_at.desc(), Project.created_at.desc())
+    )
+    projects = list(project_result.scalars().all())
+    if not projects:
+        return {"items": []}
+
+    project_ids = [project.id for project in projects]
+    latest_runs_subq = (
+        select(
+            ProjectRun.id.label("id"),
+            ProjectRun.project_id.label("project_id"),
+            ProjectRun.status.label("status"),
+            ProjectRun.current_node.label("current_node"),
+            ProjectRun.updated_at.label("updated_at"),
+            func.row_number()
+            .over(
+                partition_by=ProjectRun.project_id,
+                order_by=ProjectRun.created_at.desc(),
+            )
+            .label("rn"),
+        )
+        .where(ProjectRun.project_id.in_(project_ids))
+        .subquery()
+    )
+
+    run_result = await db.execute(select(latest_runs_subq).where(latest_runs_subq.c.rn == 1))
+    latest_runs_by_project: dict[uuid.UUID, dict[str, object]] = {}
+    for row in run_result:
+        latest_runs_by_project[row.project_id] = {
+            "id": row.id,
+            "status": row.status,
+            "current_node": row.current_node,
+            "updated_at": row.updated_at,
+        }
+
+    items: list[ProjectListItem] = []
+    for project in projects:
+        payload = ProjectResponse.model_validate(project).model_dump()
+        payload["latest_run"] = latest_runs_by_project.get(project.id)
+        items.append(ProjectListItem.model_validate(payload))
+
+    return {"items": items}
 
 
 @router.get("/projects/{projectId}", operation_id="getProject", response_model=ProjectResponse)

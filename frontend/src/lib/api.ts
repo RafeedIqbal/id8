@@ -2,12 +2,16 @@ import type {
   ApprovalEvent,
   ApprovalStage,
   ArtifactType,
+  DesignTool,
   DesignProvider,
   ModelProfile,
   Project,
+  ProjectListItem,
   ProjectArtifact,
+  ProjectRunDetail,
   ProjectRun,
   ProjectStatus,
+  StitchAuthPayload,
 } from "@/types/domain";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -35,6 +39,29 @@ type ProjectRunWire = {
   updated_at: string;
 };
 
+type RunTimelineEventWire = {
+  event_type: string;
+  from_node?: string;
+  to_node: string;
+  outcome?: string;
+  created_at: string;
+};
+
+type ProjectRunDetailWire = ProjectRunWire & {
+  timeline: RunTimelineEventWire[];
+};
+
+type ProjectRunSummaryWire = {
+  id: string;
+  status: ProjectStatus;
+  current_node: string;
+  updated_at: string;
+};
+
+type ProjectListItemWire = ProjectWire & {
+  latest_run?: ProjectRunSummaryWire;
+};
+
 type ProjectArtifactWire = {
   id: string;
   project_id: string;
@@ -55,6 +82,17 @@ type ApprovalEventWire = {
   notes?: string;
   created_by: string;
   created_at: string;
+};
+
+type DesignToolWire = {
+  name: string;
+  params: string[];
+  description: string;
+};
+
+type DesignToolsWire = {
+  provider: DesignProvider;
+  usable_tools: DesignToolWire[];
 };
 
 type DeploymentRecord = {
@@ -92,6 +130,34 @@ function toProjectRun(data: ProjectRunWire): ProjectRun {
   };
 }
 
+function toProjectListItem(data: ProjectListItemWire): ProjectListItem {
+  const project = toProject(data);
+  return {
+    ...project,
+    latestRun: data.latest_run
+      ? {
+          id: data.latest_run.id,
+          status: data.latest_run.status,
+          currentNode: data.latest_run.current_node,
+          updatedAt: data.latest_run.updated_at,
+        }
+      : undefined,
+  };
+}
+
+function toProjectRunDetail(data: ProjectRunDetailWire): ProjectRunDetail {
+  return {
+    ...toProjectRun(data),
+    timeline: data.timeline.map((event) => ({
+      eventType: event.event_type,
+      fromNode: event.from_node,
+      toNode: event.to_node,
+      outcome: event.outcome,
+      createdAt: event.created_at,
+    })),
+  };
+}
+
 function toProjectArtifact(data: ProjectArtifactWire): ProjectArtifact {
   return {
     id: data.id,
@@ -125,12 +191,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail ?? `API error ${res.status}`);
+    throw new Error(body?.detail ?? body?.error?.message ?? `API error ${res.status}`);
   }
   return res.json();
 }
 
 // Projects
+export async function listProjects(): Promise<{ items: ProjectListItem[] }> {
+  const data = await request<{ items: ProjectListItemWire[] }>("/v1/projects");
+  return { items: data.items.map(toProjectListItem) };
+}
+
 export async function createProject(
   initial_prompt: string,
   constraints?: Record<string, unknown>
@@ -162,13 +233,41 @@ export async function createRun(
   return toProjectRun(data);
 }
 
+export async function getLatestRun(projectId: string): Promise<ProjectRunDetail> {
+  const data = await request<ProjectRunDetailWire>(`/v1/projects/${projectId}/runs/latest`);
+  return toProjectRunDetail(data);
+}
+
 // Design
+function toWireStitchAuth(auth?: StitchAuthPayload): Record<string, string> | undefined {
+  if (!auth) return undefined;
+  return {
+    auth_method: auth.authMethod,
+    ...(auth.apiKey ? { api_key: auth.apiKey } : {}),
+    ...(auth.oauthToken ? { oauth_token: auth.oauthToken } : {}),
+    ...(auth.googUserProject ? { goog_user_project: auth.googUserProject } : {}),
+  };
+}
+
+export async function listDesignTools(): Promise<{ provider: DesignProvider; usableTools: DesignTool[] }> {
+  const data = await request<DesignToolsWire>("/v1/design/tools");
+  return {
+    provider: data.provider,
+    usableTools: data.usable_tools.map((tool) => ({
+      name: tool.name,
+      params: tool.params,
+      description: tool.description,
+    })),
+  };
+}
+
 export async function generateDesign(
   projectId: string,
   provider: DesignProvider,
   model_profile: ModelProfile,
   prompt_constraints?: Record<string, unknown>,
-  idempotency_key?: string
+  idempotency_key?: string,
+  stitch_auth?: StitchAuthPayload
 ): Promise<{ artifact: ProjectArtifact }> {
   const headers: Record<string, string> = {};
   if (idempotency_key) headers["Idempotency-Key"] = idempotency_key;
@@ -177,7 +276,12 @@ export async function generateDesign(
     {
       method: "POST",
       headers,
-      body: JSON.stringify({ provider, model_profile, prompt_constraints }),
+      body: JSON.stringify({
+        provider,
+        model_profile,
+        prompt_constraints,
+        stitch_auth: toWireStitchAuth(stitch_auth),
+      }),
     }
   );
   return { artifact: toProjectArtifact(data.artifact) };
@@ -188,7 +292,8 @@ export async function submitDesignFeedback(
   feedback_text: string,
   target_screen_id?: string,
   target_component_id?: string,
-  idempotency_key?: string
+  idempotency_key?: string,
+  stitch_auth?: StitchAuthPayload
 ): Promise<{ artifact: ProjectArtifact }> {
   const headers: Record<string, string> = {};
   if (idempotency_key) headers["Idempotency-Key"] = idempotency_key;
@@ -197,7 +302,12 @@ export async function submitDesignFeedback(
     {
       method: "POST",
       headers,
-      body: JSON.stringify({ feedback_text, target_screen_id, target_component_id }),
+      body: JSON.stringify({
+        feedback_text,
+        target_screen_id,
+        target_component_id,
+        stitch_auth: toWireStitchAuth(stitch_auth),
+      }),
     }
   );
   return { artifact: toProjectArtifact(data.artifact) };

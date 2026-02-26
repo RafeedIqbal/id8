@@ -12,13 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import async_session, get_db
 from app.dependencies.idempotency import get_idempotency_key
 from app.models.approval_event import ApprovalEvent
+from app.models.audit_event import AuditEvent
 from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
 from app.orchestrator import ALL_NODE_NAMES, NODE_TO_PROJECT_STATUS, NodeName, run_orchestrator
 from app.orchestrator.handlers.stubs import artifact_type_for_node
-from app.schemas.run import CreateRunRequest, ProjectRunResponse
+from app.schemas.run import (
+    CreateRunRequest,
+    ProjectRunDetailResponse,
+    ProjectRunResponse,
+    RunTimelineEvent,
+)
 
 router = APIRouter(tags=["runs"])
 logger = logging.getLogger(__name__)
@@ -46,6 +52,13 @@ _WAIT_NODE_TO_STAGE: dict[NodeName, ApprovalStage] = {
     NodeName.WAIT_TECH_PLAN_APPROVAL: ApprovalStage.TECH_PLAN,
     NodeName.WAIT_DEPLOY_APPROVAL: ApprovalStage.DEPLOY,
 }
+_TIMELINE_EVENT_TYPES = (
+    "orchestrator.run_started",
+    "orchestrator.run_resumed",
+    "orchestrator.node_transition",
+    "orchestrator.run_failed",
+    "orchestrator.run_requeued",
+)
 
 
 async def _run_orchestrator_background(run_id: uuid.UUID) -> None:
@@ -67,6 +80,70 @@ async def _latest_run_for_project(project_id: uuid.UUID, db: AsyncSession) -> Pr
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _record_run_event(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    event_type: str,
+    to_node: str | NodeName,
+    from_node: str | NodeName | None = None,
+    outcome: str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "run_id": str(run_id),
+        "to_node": str(to_node),
+    }
+    if from_node is not None:
+        payload["from_node"] = str(from_node)
+    if outcome:
+        payload["outcome"] = outcome
+
+    event = AuditEvent(
+        project_id=project_id,
+        actor_user_id=None,
+        event_type=event_type,
+        event_payload=payload,
+    )
+    db.add(event)
+
+
+async def _load_timeline_events(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> list[RunTimelineEvent]:
+    result = await db.execute(
+        select(AuditEvent)
+        .where(
+            AuditEvent.project_id == project_id,
+            AuditEvent.event_payload["run_id"].astext == str(run_id),
+            AuditEvent.event_type.in_(_TIMELINE_EVENT_TYPES),
+        )
+        .order_by(AuditEvent.created_at.asc())
+    )
+    events: list[RunTimelineEvent] = []
+    for record in result.scalars():
+        payload = record.event_payload if isinstance(record.event_payload, dict) else {}
+        to_node = payload.get("to_node")
+        if not isinstance(to_node, str) or not to_node:
+            continue
+
+        raw_from_node = payload.get("from_node")
+        raw_outcome = payload.get("outcome")
+        events.append(
+            RunTimelineEvent(
+                event_type=record.event_type,
+                from_node=raw_from_node if isinstance(raw_from_node, str) else None,
+                to_node=to_node,
+                outcome=raw_outcome if isinstance(raw_outcome, str) else None,
+                created_at=record.created_at,
+            )
+        )
+    return events
 
 
 async def _was_node_previously_reached(
@@ -127,6 +204,39 @@ async def _was_node_previously_reached(
     return False
 
 
+@router.get(
+    "/projects/{projectId}/runs/latest",
+    operation_id="getLatestRun",
+    response_model=ProjectRunDetailResponse,
+)
+async def get_latest_run(
+    project_id: uuid.UUID = Path(alias="projectId"),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectRunDetailResponse:
+    result = await db.execute(select(Project.id).where(Project.id == project_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    run = await _latest_run_for_project(project_id, db)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No runs found for this project")
+
+    timeline = await _load_timeline_events(db=db, project_id=project_id, run_id=run.id)
+    if not timeline:
+        timeline = [
+            RunTimelineEvent(
+                event_type="orchestrator.run_started",
+                to_node=str(run.current_node),
+                outcome="started",
+                created_at=run.created_at,
+            )
+        ]
+
+    payload = ProjectRunResponse.model_validate(run).model_dump()
+    payload["timeline"] = [event.model_dump() for event in timeline]
+    return ProjectRunDetailResponse.model_validate(payload)
+
+
 @router.post("/projects/{projectId}/runs", operation_id="createRun", response_model=ProjectRunResponse, status_code=202)
 async def create_run(
     background_tasks: BackgroundTasks,
@@ -157,6 +267,7 @@ async def create_run(
                 detail=f"Node {resume_node} was not reached by the failed run",
             )
 
+        from_node = previous_run.current_node
         previous_run.current_node = resume_node
         previous_run.status = NODE_TO_PROJECT_STATUS[resume_node]
         previous_run.retry_count = 0
@@ -165,6 +276,15 @@ async def create_run(
         previous_run.updated_at = datetime.now(tz=UTC)
         project.status = NODE_TO_PROJECT_STATUS[resume_node]
         project.updated_at = datetime.now(tz=UTC)
+        await _record_run_event(
+            db=db,
+            project_id=project_id,
+            run_id=previous_run.id,
+            event_type="orchestrator.run_resumed",
+            from_node=from_node,
+            to_node=resume_node,
+            outcome="resumed",
+        )
         await db.commit()
         await db.refresh(previous_run)
         background_tasks.add_task(_run_orchestrator_background, previous_run.id)
@@ -197,6 +317,15 @@ async def create_run(
     )
     db.add(run)
     try:
+        await db.flush()
+        await _record_run_event(
+            db=db,
+            project_id=project_id,
+            run_id=run.id,
+            event_type="orchestrator.run_started",
+            to_node=start_node,
+            outcome="started",
+        )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

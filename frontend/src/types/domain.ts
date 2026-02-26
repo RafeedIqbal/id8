@@ -18,6 +18,7 @@ export type ProjectStatus =
   | "failed";
 
 export type ApprovalStage = "prd" | "design" | "tech_plan" | "deploy";
+export type StitchAuthMethod = "api_key" | "oauth_access_token";
 
 export type ArtifactType =
   | "prd"
@@ -50,6 +51,29 @@ export interface ProjectRun {
   updatedAt: string;
 }
 
+export interface RunTimelineEvent {
+  eventType: string;
+  fromNode?: string;
+  toNode: string;
+  outcome?: string;
+  createdAt: string;
+}
+
+export interface ProjectRunDetail extends ProjectRun {
+  timeline: RunTimelineEvent[];
+}
+
+export interface ProjectRunSummary {
+  id: string;
+  status: ProjectStatus;
+  currentNode: string;
+  updatedAt: string;
+}
+
+export interface ProjectListItem extends Project {
+  latestRun?: ProjectRunSummary;
+}
+
 export interface ProjectArtifact {
   id: string;
   projectId: string;
@@ -72,16 +96,31 @@ export interface ApprovalEvent {
   createdAt: string;
 }
 
+export interface StitchAuthPayload {
+  authMethod: StitchAuthMethod;
+  apiKey?: string;
+  oauthToken?: string;
+  googUserProject?: string;
+}
+
+export interface DesignTool {
+  name: string;
+  params: string[];
+  description: string;
+}
+
 export interface GenerateDesignRequest {
   provider: DesignProvider;
   modelProfile: ModelProfile;
   promptConstraints: Record<string, unknown>;
+  stitchAuth?: StitchAuthPayload;
 }
 
 export interface DesignFeedbackRequest {
   targetScreenId?: string;
   targetComponentId?: string;
   feedbackText: string;
+  stitchAuth?: StitchAuthPayload;
 }
 
 export interface ApprovalRequest {
