@@ -14,17 +14,17 @@ Implement the mandatory security gate that runs SAST, dependency audit, and secr
 ## Steps
 
 ### 1. SecurityGate handler
-- [ ] `backend/app/orchestrator/handlers/security_gate.py`
-- [ ] Load latest `code_snapshot` artifact
-- [ ] Write code files to a temp directory for scanning
-- [ ] Run all three scanners
-- [ ] Aggregate results into security report
-- [ ] Determine pass/fail based on severity
+- [x] `backend/app/orchestrator/handlers/security_gate.py`
+- [x] Load latest `code_snapshot` artifact
+- [x] Write code files to a temp directory for scanning
+- [x] Run all three scanners
+- [x] Aggregate results into security report
+- [x] Determine pass/fail based on severity
 
 ### 2. SAST scanner
-- [ ] `backend/app/security/sast.py`
-- [ ] Use `bandit` (Python) and/or `semgrep` for multi-language SAST
-- [ ] Parse findings into normalized format:
+- [x] `backend/app/security/sast.py`
+- [x] Use `bandit` (Python) and/or `semgrep` for multi-language SAST
+- [x] Parse findings into normalized format:
   ```python
   class SecurityFinding(BaseModel):
       rule_id: str
@@ -37,22 +37,22 @@ Implement the mandatory security gate that runs SAST, dependency audit, and secr
   ```
 
 ### 3. Dependency audit
-- [ ] `backend/app/security/dependency_audit.py`
-- [ ] For Python: scan `requirements.txt` / `pyproject.toml` against known vulnerability DB
-- [ ] For Node.js: parse `package.json` and check with `npm audit --json` equivalent
-- [ ] Map vulnerabilities to same `SecurityFinding` format
+- [x] `backend/app/security/dependency_audit.py`
+- [x] For Python: scan `requirements.txt` / `pyproject.toml` against known vulnerability DB
+- [x] For Node.js: parse `package.json` and check with `npm audit --json` equivalent
+- [x] Map vulnerabilities to same `SecurityFinding` format
 
 ### 4. Secret scanner
-- [ ] `backend/app/security/secret_scan.py`
-- [ ] Scan all generated files for patterns:
+- [x] `backend/app/security/secret_scan.py`
+- [x] Scan all generated files for patterns:
   - API keys (known patterns: `sk-`, `AKIA`, etc.)
   - Hardcoded passwords, tokens
   - Private keys, certificates
-- [ ] Use regex-based detection or `detect-secrets` library
-- [ ] Any secret found = `critical` severity
+- [x] Use regex-based detection or `detect-secrets` library
+- [x] Any secret found = `critical` severity
 
 ### 5. Security report artifact
-- [ ] `backend/app/schemas/security_report.py`:
+- [x] `backend/app/schemas/security_report.py`:
   ```python
   class SecurityReportContent(BaseModel):
       findings: list[SecurityFinding]
@@ -60,24 +60,24 @@ Implement the mandatory security gate that runs SAST, dependency audit, and secr
       scan_tools: list[str]     # tools used
       passed: bool              # no unresolved high/critical
   ```
-- [ ] Create `ProjectArtifact`:
+- [x] Create `ProjectArtifact`:
   - artifact_type = `security_report`
   - content = SecurityReportContent
 
 ### 6. Pass/fail logic
-- [ ] `passed = True` only if zero unresolved high or critical findings
-- [ ] If passed: `NodeResult(outcome="passed")` → transition to `PreparePR`
-- [ ] If failed: `NodeResult(outcome="failed")` → transition back to `WriteCode`
+- [x] `passed = True` only if zero unresolved high or critical findings
+- [x] If passed: `NodeResult(outcome="passed")` → transition to `PreparePR`
+- [x] If failed: `NodeResult(outcome="failed")` → transition back to `WriteCode`
   - Include findings in context for code remediation
 
 ### 7. Report display
-- [ ] Security report must be machine-readable (JSON)
-- [ ] Include enough detail for the operator UI to display findings with file/line references
+- [x] Security report must be machine-readable (JSON)
+- [x] Include enough detail for the operator UI to display findings with file/line references
 
 ## Definition of Done
-- [ ] Security gate runs all three scanners on generated code
-- [ ] High/critical findings block progression to deploy
-- [ ] Failed gate loops back to `WriteCode` with findings context
-- [ ] Clean code passes the gate and proceeds to `PreparePR`
-- [ ] Matches acceptance test scenario #5 (Security Block)
-- [ ] No false blocking on clean, well-formed code
+- [x] Security gate runs all three scanners on generated code
+- [x] High/critical findings block progression to deploy
+- [x] Failed gate loops back to `WriteCode` with findings context
+- [x] Clean code passes the gate and proceeds to `PreparePR`
+- [x] Matches acceptance test scenario #5 (Security Block)
+- [x] No false blocking on clean, well-formed code

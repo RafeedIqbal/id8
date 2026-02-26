@@ -546,6 +546,69 @@ class TestSecurityFeedbackLoop:
         assert "backend/app/routes/tasks.py" in prompt
 
     @pytest.mark.asyncio
+    async def test_security_findings_normalized_schema_included_in_prompt(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        # Uses the SecurityFinding schema emitted by SecurityGate.
+        security_report = ProjectArtifact(
+            project_id=seed_project.id,
+            run_id=seed_run.id,
+            artifact_type=ArtifactType.SECURITY_REPORT,
+            version=1,
+            content={
+                "findings": [
+                    {
+                        "rule_id": "B608",
+                        "severity": "high",
+                        "file_path": "backend/app/routes/tasks.py",
+                        "line_number": 42,
+                        "message": "Possible SQL injection vector",
+                        "remediation": "Use parameterized queries",
+                        "resolved": False,
+                    },
+                    {
+                        "rule_id": "SECRET_OPENAI_KEY",
+                        "severity": "critical",
+                        "file_path": "backend/app/config.py",
+                        "line_number": 10,
+                        "message": "OpenAI API key detected",
+                        "remediation": "Load secrets from environment variables",
+                        "resolved": True,
+                    },
+                ],
+            },
+            model_profile=ModelProfile.PRIMARY,
+        )
+        db.add(security_report)
+        await db.flush()
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(
+            db,
+            seed_run,
+            previous_artifacts={
+                "prd": _SAMPLE_PRD,
+                "design_spec": _SAMPLE_DESIGN,
+                "tech_plan": _SAMPLE_TECH_PLAN,
+                "code_snapshot": _VALID_CODE_SNAPSHOT,
+            },
+        )
+
+        mock_gen = AsyncMock(return_value=_mock_llm_response())
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            mock_gen,
+        ):
+            await handler.execute(ctx)
+
+        prompt = mock_gen.call_args.kwargs["prompt"]
+        assert "possible sql injection vector" in prompt.lower()
+        assert "use parameterized queries" in prompt.lower()
+        assert "backend/app/routes/tasks.py:42" in prompt
+        # Resolved findings should not be sent back for remediation.
+        assert "openai api key detected" not in prompt.lower()
+
+    @pytest.mark.asyncio
     async def test_no_security_findings_when_no_report(
         self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
     ) -> None:

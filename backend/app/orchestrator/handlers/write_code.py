@@ -248,21 +248,65 @@ async def _load_security_feedback(ctx: RunContext) -> str | None:
         severity = str(finding.get("severity", "unknown")).lower()
         if severity not in {"high", "critical"}:
             continue
-        status = str(finding.get("status", "unresolved")).lower()
-        if status in {"resolved", "fixed", "dismissed", "ignored"}:
+        if _finding_is_resolved(finding):
             continue
 
-        title = finding.get("title", finding.get("description", "Untitled"))
-        detail = finding.get("detail", finding.get("description", ""))
-        file_path = finding.get("file", "")
-        line = finding.get("line", "")
-        loc = f" ({file_path}:{line})" if file_path else ""
-        parts.append(f"- [{severity.upper()}]{loc} {title}: {detail}")
+        # Support both legacy security-report keys and the normalized
+        # SecurityFinding schema from Task 09.
+        title = str(
+            finding.get("title")
+            or finding.get("rule_id")
+            or finding.get("message")
+            or finding.get("description")
+            or "Untitled"
+        )
+        detail = str(
+            finding.get("detail")
+            or finding.get("message")
+            or finding.get("description")
+            or ""
+        )
+        remediation = str(finding.get("remediation", "")).strip()
+        if remediation:
+            detail = (
+                f"{detail} Remediation: {remediation}"
+                if detail
+                else f"Remediation: {remediation}"
+            )
+
+        file_path = str(finding.get("file_path") or finding.get("file") or "")
+        line = finding.get("line_number", finding.get("line", ""))
+        line_number: int | None = None
+        if isinstance(line, int):
+            line_number = line
+        elif isinstance(line, str) and line.isdigit():
+            line_number = int(line)
+
+        if file_path and line_number and line_number > 0:
+            loc = f" ({file_path}:{line_number})"
+        elif file_path:
+            loc = f" ({file_path})"
+        else:
+            loc = ""
+
+        entry = f"- [{severity.upper()}]{loc} {title}"
+        if detail:
+            entry += f": {detail}"
+        parts.append(entry)
 
     if not parts:
         return None
 
     return "\n".join(parts)
+
+
+def _finding_is_resolved(finding: dict[str, Any]) -> bool:
+    """Return True when a finding is explicitly marked as resolved."""
+    resolved = finding.get("resolved")
+    if isinstance(resolved, bool):
+        return resolved
+    status = str(finding.get("status", "unresolved")).lower()
+    return status in {"resolved", "fixed", "dismissed", "ignored"}
 
 
 def _clean_artifact_content(raw: Any) -> dict[str, Any]:
