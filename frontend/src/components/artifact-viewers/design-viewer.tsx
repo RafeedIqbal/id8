@@ -108,7 +108,7 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
   }
 
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in min-w-0">
       {/* Provider badge */}
       {provider && (
         <div className="mb-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs font-mono-display text-text-2">
@@ -141,9 +141,9 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
       {screens.length === 0 ? (
         <RawJsonInspector data={artifact.content} warning="No screens defined. Showing raw content." />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-4 min-w-0">
           {/* Screen list */}
-          <div className="glass p-3 space-y-1 lg:max-h-[600px] overflow-y-auto">
+          <div className="glass p-3 space-y-1 lg:max-h-[600px] overflow-y-auto min-w-0">
             <div className="text-[10px] font-mono-display text-text-3 tracking-widest uppercase px-3 py-1.5">
               Screens ({screens.length})
             </div>
@@ -164,7 +164,7 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
           </div>
 
           {/* Screen detail */}
-          <div className="glass p-6 space-y-6">
+          <div className="glass p-6 space-y-6 min-w-0">
             <div>
               <h3 className="text-lg font-semibold text-text-0 mb-1">
                 {selected?.name ?? `Screen ${selectedIdx + 1}`}
@@ -196,7 +196,7 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
                             {comp.name ?? comp.id ?? "—"}
                           </td>
                           <td className="py-2.5 pr-4 text-text-2 text-xs">{comp.type ?? "—"}</td>
-                          <td className="py-2.5 text-text-3 text-xs font-mono-display">
+                          <td className="py-2.5 text-text-3 text-xs font-mono-display break-words">
                             {(comp.properties ?? comp.props)
                               ? Object.entries(comp.properties ?? comp.props ?? {})
                                   .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
@@ -253,12 +253,12 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
                         href={asset}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-accent font-mono-display hover:underline"
+                        className="inline-flex max-w-full px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-accent font-mono-display hover:underline break-all"
                       >
                         {asset}
                       </a>
                     ) : (
-                      <span key={i} className="inline-flex px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-text-1 font-mono-display">
+                      <span key={i} className="inline-flex max-w-full px-3 py-1.5 rounded-md bg-surface-2 border border-border-1 text-xs text-text-1 font-mono-display break-all">
                         {asset}
                       </span>
                     )
@@ -276,7 +276,9 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
           <summary className="text-xs font-mono-display text-text-3 cursor-pointer hover:text-text-2 tracking-widest uppercase">
             Provider Metadata
           </summary>
-          <pre className="text-xs mt-3">{JSON.stringify(providerMeta, null, 2)}</pre>
+          <pre className="text-xs mt-3 overflow-auto max-w-full whitespace-pre-wrap break-words">
+            {JSON.stringify(providerMeta, null, 2)}
+          </pre>
         </details>
       )}
     </div>

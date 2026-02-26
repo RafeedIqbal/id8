@@ -78,7 +78,7 @@ export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
   const hasContent = findings.length > 0 || (summaryRecord && Object.keys(summaryRecord).length > 0);
 
   return (
-    <div className="animate-fade-in space-y-6">
+    <div className="animate-fade-in space-y-6 min-w-0">
       {/* Summary badges */}
       <div className="flex flex-wrap gap-3">
         {(["critical", "high", "medium", "low"] as const).map((sev) => (
@@ -95,7 +95,7 @@ export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
 
       {/* Findings table */}
       {findings.length > 0 ? (
-        <div className="glass overflow-hidden">
+        <div className="glass overflow-hidden min-w-0">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -114,11 +114,11 @@ export function SecurityViewer({ artifact }: { artifact: ProjectArtifact }) {
                       <SeverityBadge severity={f.severity} />
                     </td>
                     <td className="py-3 px-4 font-mono-display text-xs text-text-1">{f.rule_id ?? "—"}</td>
-                    <td className="py-3 px-4 font-mono-display text-xs text-accent">
+                    <td className="py-3 px-4 font-mono-display text-xs text-accent break-all">
                       {f.file_path ?? "—"}
                       {f.line_number != null && <span className="text-text-3">:{f.line_number}</span>}
                     </td>
-                    <td className="py-3 px-4 text-xs text-text-2 max-w-[300px]">
+                    <td className="py-3 px-4 text-xs text-text-2 max-w-[300px] break-words">
                       <div>{f.message ?? "—"}</div>
                       {f.remediation && (
                         <div className="text-success mt-1 text-[11px]">Fix: {f.remediation}</div>

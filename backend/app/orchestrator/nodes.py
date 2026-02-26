@@ -64,7 +64,7 @@ NODE_REGISTRY: dict[NodeName, NodeMeta] = {
     ),
     NodeName.WAIT_DESIGN_APPROVAL: NodeMeta(
         NodeName.WAIT_DESIGN_APPROVAL,
-        next_on_success=NodeName.GENERATE_TECH_PLAN,
+        next_on_success=NodeName.WRITE_CODE,
         next_on_failure=NodeName.GENERATE_DESIGN,
         is_wait_node=True,
     ),

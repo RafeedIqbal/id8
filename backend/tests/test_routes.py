@@ -82,7 +82,11 @@ async def seed_user(db: AsyncSession) -> User:
 @pytest_asyncio.fixture
 async def seed_project(db: AsyncSession, seed_user: User) -> Project:
     """Create a project in ideation status."""
-    project = Project(owner_user_id=seed_user.id, initial_prompt="Build me a todo app")
+    project = Project(
+        owner_user_id=seed_user.id,
+        title="Todo App",
+        initial_prompt="Build me a todo app",
+    )
     db.add(project)
     await db.flush()
     return project
@@ -109,16 +113,20 @@ async def seed_run(db: AsyncSession, seed_project: Project) -> ProjectRun:
 class TestCreateProject:
     @pytest.mark.asyncio
     async def test_happy_path(self, client: AsyncClient, seed_user: User) -> None:
-        resp = await client.post("/v1/projects", json={"initial_prompt": "Build a CRM"})
+        resp = await client.post(
+            "/v1/projects",
+            json={"title": "CRM Project", "initial_prompt": "Build a CRM"},
+        )
         assert resp.status_code == 201
         data = resp.json()
+        assert data["title"] == "CRM Project"
         assert data["initial_prompt"] == "Build a CRM"
         assert data["status"] == "ideation"
         assert "id" in data
 
     @pytest.mark.asyncio
     async def test_missing_prompt_returns_422(self, client: AsyncClient, seed_user: User) -> None:
-        resp = await client.post("/v1/projects", json={})
+        resp = await client.post("/v1/projects", json={"title": "Untitled"})
         assert resp.status_code == 422
         body = resp.json()
         assert "error" in body
@@ -138,7 +146,11 @@ class TestListProjects:
         seed_user: User,
         seed_project: Project,
     ) -> None:
-        project_with_run = Project(owner_user_id=seed_user.id, initial_prompt="Build a billing service")
+        project_with_run = Project(
+            owner_user_id=seed_user.id,
+            title="Billing Service",
+            initial_prompt="Build a billing service",
+        )
         db.add(project_with_run)
         await db.flush()
 
@@ -359,7 +371,11 @@ class TestGetLatestRun:
     async def test_no_runs_for_project(
         self, client: AsyncClient, db: AsyncSession, seed_user: User
     ) -> None:
-        project = Project(owner_user_id=seed_user.id, initial_prompt="No run project")
+        project = Project(
+            owner_user_id=seed_user.id,
+            title="No Run Project",
+            initial_prompt="No run project",
+        )
         db.add(project)
         await db.flush()
 
@@ -413,8 +429,8 @@ class TestCreateRun:
         db: AsyncSession,
         seed_user: User,
     ) -> None:
-        project_one = Project(owner_user_id=seed_user.id, initial_prompt="Project one")
-        project_two = Project(owner_user_id=seed_user.id, initial_prompt="Project two")
+        project_one = Project(owner_user_id=seed_user.id, title="Project One", initial_prompt="Project one")
+        project_two = Project(owner_user_id=seed_user.id, title="Project Two", initial_prompt="Project two")
         db.add(project_one)
         db.add(project_two)
         await db.flush()
@@ -459,7 +475,7 @@ class TestCreateRun:
         self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
     ) -> None:
         seed_run.status = ProjectStatus.FAILED
-        seed_run.current_node = "EndFailed"
+        seed_run.current_node = "GeneratePRD"
         seed_run.last_error_code = "TEST"
         seed_run.last_error_message = "boom"
 
@@ -509,11 +525,12 @@ class TestCreateRun:
         db.add(
             AuditEvent(
                 project_id=seed_project.id,
-                event_type="run.node_entered",
+                event_type="orchestrator.node_transition",
                 event_payload={
                     "run_id": str(seed_run.id),
-                    "node": "WriteCode",
-                    "attempt": 1,
+                    "from_node": "WriteCode",
+                    "to_node": "EndFailed",
+                    "outcome": "failed",
                 },
             )
         )
@@ -872,7 +889,11 @@ class TestDeployProject:
         )
         db.add(first_approval)
 
-        other_project = Project(owner_user_id=seed_user.id, initial_prompt="Deploy project two")
+        other_project = Project(
+            owner_user_id=seed_user.id,
+            title="Deploy Project Two",
+            initial_prompt="Deploy project two",
+        )
         db.add(other_project)
         await db.flush()
         other_project.status = ProjectStatus.DEPLOY_READY
@@ -1086,17 +1107,17 @@ class TestUpdateProject:
             f"/v1/projects/{seed_project.id}",
             json={
                 "stack_json": {
-                    "frontend_framework": "react",
-                    "backend_framework": "express",
-                    "database": "postgresql",
-                    "database_provider": "supabase",
+                    "frontend_framework": "nextjs",
+                    "backend_framework": "nextjs",
+                    "database": "none",
+                    "database_provider": "none",
                     "hosting_frontend": "vercel",
                     "hosting_backend": "vercel",
                 },
             },
         )
         assert resp.status_code == 200
-        assert resp.json()["stack_json"]["frontend_framework"] == "react"
+        assert resp.json()["stack_json"]["frontend_framework"] == "nextjs"
 
     @pytest.mark.asyncio
     async def test_empty_update_returns_422(
@@ -1269,22 +1290,28 @@ class TestReplayFromNode:
         db.add(run)
         await db.flush()
 
-        # Add an audit event so that IngestPrompt is considered "reached"
+        # Mark WriteCode as the failed node in the latest attempt.
         from app.models.audit_event import AuditEvent
 
         audit = AuditEvent(
             project_id=seed_project.id,
-            event_type="orchestrator.run_started",
-            event_payload={"run_id": str(run.id), "to_node": "IngestPrompt"},
+            event_type="orchestrator.node_transition",
+            event_payload={
+                "run_id": str(run.id),
+                "from_node": "WriteCode",
+                "to_node": "EndFailed",
+                "outcome": "failed",
+            },
         )
         db.add(audit)
         await db.flush()
 
         resp = await client.post(
             f"/v1/projects/{seed_project.id}/runs",
-            json={"resume_from_node": "IngestPrompt", "replay_mode": "retry_failed"},
+            json={"resume_from_node": "WriteCode", "replay_mode": "retry_failed"},
         )
         assert resp.status_code == 202
         data = resp.json()
         # Should be the same run ID (mutated in place)
         assert data["id"] == str(run.id)
+        assert data["current_node"] == "WriteCode"

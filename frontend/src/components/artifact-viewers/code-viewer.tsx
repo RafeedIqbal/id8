@@ -138,7 +138,7 @@ export function CodeViewer({ artifact }: { artifact: ProjectArtifact }) {
   const tree = buildTree(files);
 
   return (
-    <div className="animate-fade-in space-y-4">
+    <div className="animate-fade-in space-y-4 min-w-0">
       {/* Build/test commands */}
       {(buildCmd || testCmd) && (
         <div className="flex flex-wrap gap-3 mb-4">
@@ -157,9 +157,9 @@ export function CodeViewer({ artifact }: { artifact: ProjectArtifact }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-4 min-w-0">
         {/* File tree */}
-        <div className="glass p-2 lg:max-h-[600px] overflow-y-auto">
+        <div className="glass p-2 lg:max-h-[600px] overflow-y-auto min-w-0">
           <div className="text-[10px] font-mono-display text-text-3 tracking-widest uppercase px-3 py-2">
             Files ({files.length})
           </div>
@@ -176,18 +176,18 @@ export function CodeViewer({ artifact }: { artifact: ProjectArtifact }) {
         </div>
 
         {/* Code panel */}
-        <div className="glass p-0 overflow-hidden">
+        <div className="glass p-0 overflow-hidden min-w-0">
           {selected ? (
             <>
-              <div className="px-4 py-2.5 border-b border-border-0 flex items-center gap-2">
-                <span className="font-mono-display text-xs text-accent">{selected.path}</span>
+              <div className="px-4 py-2.5 border-b border-border-0 flex items-center gap-2 min-w-0">
+                <span className="font-mono-display text-xs text-accent truncate">{selected.path}</span>
                 {selected.language && (
                   <span className="text-[10px] text-text-3 bg-surface-2 px-2 py-0.5 rounded">
                     {selected.language}
                   </span>
                 )}
               </div>
-              <pre className="p-4 overflow-auto max-h-[560px] text-xs leading-relaxed rounded-none border-none m-0">
+              <pre className="p-4 overflow-auto max-h-[560px] text-xs leading-relaxed rounded-none border-none m-0 whitespace-pre">
                 <code>{selected.content ?? "// No content"}</code>
               </pre>
             </>

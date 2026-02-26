@@ -17,7 +17,7 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
         "success": NodeName.WAIT_DESIGN_APPROVAL,
         "failure": NodeName.END_FAILED,
     },
-    NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.GENERATE_TECH_PLAN, "rejected": NodeName.GENERATE_DESIGN},
+    NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_DESIGN},
     NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_TECH_PLAN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_TECH_PLAN},
     NodeName.WRITE_CODE: {

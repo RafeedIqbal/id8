@@ -83,10 +83,13 @@ export default function DashboardPage() {
             >
               <div className="flex items-start justify-between mb-3">
                 <h2 className="text-base font-semibold text-text-0 group-hover:text-accent transition-colors">
-                  {truncate(project.initialPrompt, 80)}
+                  {project.title}
                 </h2>
                 <ProjectStatusBadge status={project.status} />
               </div>
+              <p className="text-sm text-text-2 mb-3">
+                {truncate(project.initialPrompt, 120)}
+              </p>
 
               <div className="flex items-center gap-4 text-xs text-text-3 font-mono-display">
                 <span>{formatRelative(project.updatedAt)}</span>

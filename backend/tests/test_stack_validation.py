@@ -64,42 +64,42 @@ class TestStackJsonValidation:
     def test_default_stack_is_valid(self) -> None:
         stack = DEFAULT_STACK
         assert stack.frontend_framework == "nextjs"
-        assert stack.backend_framework == "fastapi"
-        assert stack.database == "postgresql"
-        assert stack.database_provider == "supabase"
+        assert stack.backend_framework == "nextjs"
+        assert stack.database == "none"
+        assert stack.database_provider == "none"
         assert stack.hosting_frontend == "vercel"
-        assert stack.hosting_backend == "supabase"
+        assert stack.hosting_backend == "vercel"
 
-    def test_valid_custom_stack(self) -> None:
+    def test_valid_fixed_stack(self) -> None:
         stack = StackJson(
-            frontend_framework="react",
-            backend_framework="express",
-            database="mysql",
-            database_provider="planetscale",
+            frontend_framework="nextjs",
+            backend_framework="nextjs",
+            database="none",
+            database_provider="none",
             hosting_frontend="vercel",
             hosting_backend="vercel",
         )
-        assert stack.frontend_framework == "react"
+        assert stack.frontend_framework == "nextjs"
         assert stack.hosting_backend == "vercel"
 
     def test_invalid_hosting_frontend(self) -> None:
         with pytest.raises(ValidationError):
             StackJson(
                 frontend_framework="nextjs",
-                backend_framework="fastapi",
-                database="postgresql",
-                database_provider="supabase",
+                backend_framework="nextjs",
+                database="none",
+                database_provider="none",
                 hosting_frontend="netlify",  # type: ignore[arg-type]
-                hosting_backend="supabase",
+                hosting_backend="vercel",
             )
 
     def test_invalid_hosting_backend(self) -> None:
         with pytest.raises(ValidationError):
             StackJson(
                 frontend_framework="nextjs",
-                backend_framework="fastapi",
-                database="postgresql",
-                database_provider="supabase",
+                backend_framework="nextjs",
+                database="none",
+                database_provider="none",
                 hosting_frontend="vercel",
                 hosting_backend="aws",  # type: ignore[arg-type]
             )
@@ -108,33 +108,33 @@ class TestStackJsonValidation:
         with pytest.raises(ValidationError):
             StackJson(
                 frontend_framework="angular",  # type: ignore[arg-type]
-                backend_framework="fastapi",
-                database="postgresql",
-                database_provider="supabase",
-                hosting_frontend="vercel",
-                hosting_backend="supabase",
-            )
-
-    def test_reject_local_provider(self) -> None:
-        with pytest.raises(ValidationError):
-            StackJson(
-                frontend_framework="nextjs",
-                backend_framework="fastapi",
-                database="postgresql",
-                database_provider="local",
+                backend_framework="nextjs",
+                database="none",
+                database_provider="none",
                 hosting_frontend="vercel",
                 hosting_backend="vercel",
             )
 
-    def test_reject_non_supabase_db_for_supabase_backend(self) -> None:
+    def test_reject_non_none_database_provider(self) -> None:
         with pytest.raises(ValidationError):
             StackJson(
                 frontend_framework="nextjs",
-                backend_framework="fastapi",
-                database="mysql",
-                database_provider="planetscale",
+                backend_framework="nextjs",
+                database="none",
+                database_provider="local",  # type: ignore[arg-type]
                 hosting_frontend="vercel",
-                hosting_backend="supabase",
+                hosting_backend="vercel",
+            )
+
+    def test_reject_non_none_database(self) -> None:
+        with pytest.raises(ValidationError):
+            StackJson(
+                frontend_framework="nextjs",
+                backend_framework="nextjs",
+                database="postgresql",  # type: ignore[arg-type]
+                database_provider="none",
+                hosting_frontend="vercel",
+                hosting_backend="vercel",
             )
 
 
@@ -144,7 +144,7 @@ class TestCreateProjectWithStack:
         self, client: AsyncClient, seed_user: User
     ) -> None:
         resp = await client.post(
-            "/v1/projects", json={"initial_prompt": "Build me a CRM"}
+            "/v1/projects", json={"title": "CRM", "initial_prompt": "Build me a CRM"}
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -153,63 +153,42 @@ class TestCreateProjectWithStack:
         assert data["stack_json"]["hosting_frontend"] == "vercel"
 
     @pytest.mark.asyncio
-    async def test_create_with_custom_stack(
-        self, client: AsyncClient, seed_user: User
-    ) -> None:
-        resp = await client.post(
-            "/v1/projects",
-            json={
-                "initial_prompt": "Build me a blog",
-                "stack_json": {
-                    "frontend_framework": "vue",
-                    "backend_framework": "express",
-                    "database": "mysql",
-                    "database_provider": "planetscale",
-                    "hosting_frontend": "vercel",
-                    "hosting_backend": "vercel",
-                },
-            },
-        )
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["stack_json"]["frontend_framework"] == "vue"
-        assert data["stack_json"]["hosting_backend"] == "vercel"
-
-    @pytest.mark.asyncio
     async def test_reject_non_hostable_stack(
         self, client: AsyncClient, seed_user: User
     ) -> None:
         resp = await client.post(
             "/v1/projects",
             json={
+                "title": "Invalid Stack",
                 "initial_prompt": "Build me a thing",
                 "stack_json": {
                     "frontend_framework": "nextjs",
-                    "backend_framework": "fastapi",
-                    "database": "postgresql",
-                    "database_provider": "supabase",
+                    "backend_framework": "nextjs",
+                    "database": "none",
+                    "database_provider": "none",
                     "hosting_frontend": "netlify",
-                    "hosting_backend": "supabase",
+                    "hosting_backend": "vercel",
                 },
             },
         )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_reject_incompatible_provider_combo(
+    async def test_reject_non_fixed_database(
         self, client: AsyncClient, seed_user: User
     ) -> None:
         resp = await client.post(
             "/v1/projects",
             json={
+                "title": "Invalid Database",
                 "initial_prompt": "Build me a thing",
                 "stack_json": {
                     "frontend_framework": "nextjs",
-                    "backend_framework": "fastapi",
+                    "backend_framework": "nextjs",
                     "database": "mysql",
-                    "database_provider": "planetscale",
+                    "database_provider": "none",
                     "hosting_frontend": "vercel",
-                    "hosting_backend": "supabase",
+                    "hosting_backend": "vercel",
                 },
             },
         )

@@ -21,8 +21,8 @@ export function useProject(id: string, opts?: { refetchInterval?: number }) {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { prompt: string; constraints?: Record<string, unknown>; stackJson?: StackJson }) =>
-      api.createProject(vars.prompt, vars.constraints, vars.stackJson),
+    mutationFn: (vars: { title: string; prompt: string; constraints?: Record<string, unknown>; stackJson?: StackJson }) =>
+      api.createProject(vars.title, vars.prompt, vars.constraints, vars.stackJson),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }
@@ -41,7 +41,7 @@ export function useDeleteProject(projectId: string) {
 export function useUpdateProject(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { initial_prompt?: string; stack_json?: StackJson }) =>
+    mutationFn: (vars: { title?: string; initial_prompt?: string; stack_json?: StackJson }) =>
       api.updateProject(projectId, vars),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project", projectId] });

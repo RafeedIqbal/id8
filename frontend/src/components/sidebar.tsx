@@ -34,7 +34,6 @@ const NAV_ITEMS = [
 const ARTIFACT_SUB_ITEMS = [
   { label: "PRD", type: "prd" },
   { label: "Screens", type: "design_spec" },
-  { label: "Tech Plan", type: "tech_plan" },
   { label: "Code Base", type: "code_snapshot" },
 ] as const;
 
@@ -145,9 +144,6 @@ export function Sidebar() {
   const latestDesignArtifact = artifactsData?.items
     ?.filter((a) => a.artifactType === "design_spec")
     ?.sort((a, b) => b.version - a.version)?.[0];
-  const latestDeployArtifact = artifactsData?.items
-    ?.filter((a) => a.artifactType === "deploy_report")
-    ?.sort((a, b) => b.version - a.version)?.[0];
 
   const designMetadata = (() => {
     const content = latestDesignArtifact?.content;
@@ -167,26 +163,6 @@ export function Sidebar() {
     const projectId = designMetadata.stitch_project_id;
     if (typeof projectId === "string" && projectId.trim()) {
       return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId)}`;
-    }
-    return undefined;
-  })();
-
-  const supabaseDashboardUrl = (() => {
-    const content = latestDeployArtifact?.content;
-    if (!content || typeof content !== "object") return undefined;
-    const record = content as Record<string, unknown>;
-    const supabase =
-      record.supabase && typeof record.supabase === "object" && !Array.isArray(record.supabase)
-        ? (record.supabase as Record<string, unknown>)
-        : {};
-    const direct =
-      (record.supabase_dashboard_url as string | undefined) ??
-      (supabase.dashboard_url as string | undefined) ??
-      (supabase.project_url as string | undefined);
-    if (direct) return direct;
-    const ref = supabase.supabase_ref;
-    if (typeof ref === "string" && ref.trim()) {
-      return `https://supabase.com/dashboard/project/${encodeURIComponent(ref)}`;
     }
     return undefined;
   })();
@@ -351,16 +327,6 @@ export function Sidebar() {
                         icon={
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M12 1L1 22h22L12 1z" />
-                          </svg>
-                        }
-                      />
-                      <ExternalNavLink
-                        href={supabaseDashboardUrl}
-                        label="Supabase Dashboard"
-                        onNavigate={() => setOpen(false)}
-                        icon={
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M7 20l10-16 2 4-8 12-4 0z" strokeLinecap="round" strokeLinejoin="round" />
                           </svg>
                         }
                       />

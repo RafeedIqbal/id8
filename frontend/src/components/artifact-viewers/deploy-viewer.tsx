@@ -20,10 +20,9 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
   const rawPayload = c.provider_payload ?? c.provider_details;
   if (rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)) {
     providerPayload = rawPayload as Record<string, unknown>;
-  } else if (c.vercel || c.supabase) {
+  } else if (c.vercel) {
     const composed: Record<string, unknown> = {};
     if (c.vercel) composed.vercel = c.vercel;
-    if (c.supabase) composed.supabase = c.supabase;
     if (c.health_check) composed.health_check = c.health_check;
     if (c.github_repo) composed.github_repo = c.github_repo;
     providerPayload = composed;
@@ -33,7 +32,7 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
   const hasContent = status || url;
 
   return (
-    <div className="animate-fade-in space-y-6">
+    <div className="animate-fade-in space-y-6 min-w-0">
       {/* Status banner */}
       {status && (
         <div className={`glass p-6 ${isLive ? "glow-success" : ""}`}>
@@ -66,7 +65,7 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
       )}
 
       {/* Details grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-w-0">
         {environment && (
           <div className="glass p-5">
             <div className="font-mono-display text-[10px] text-text-3 tracking-widest uppercase mb-2">Environment</div>
@@ -89,7 +88,7 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-accent hover:underline font-mono-display text-sm inline-flex items-center gap-2"
+            className="text-accent hover:underline font-mono-display text-sm inline-flex items-center gap-2 break-all"
           >
             {url}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -105,7 +104,9 @@ export function DeployViewer({ artifact }: { artifact: ProjectArtifact }) {
           <summary className="text-xs font-mono-display text-text-3 cursor-pointer hover:text-text-2 tracking-widest uppercase">
             Provider Payload
           </summary>
-          <pre className="text-xs mt-3">{JSON.stringify(providerPayload, null, 2)}</pre>
+          <pre className="text-xs mt-3 overflow-auto max-w-full whitespace-pre-wrap break-words">
+            {JSON.stringify(providerPayload, null, 2)}
+          </pre>
         </details>
       )}
 

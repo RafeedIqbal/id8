@@ -83,7 +83,7 @@ export default function ArtifactViewerPage({
   const label = ARTIFACT_LABELS[artifactType] ?? type;
 
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in min-w-0">
       <Breadcrumbs
         items={[
           { label: "Projects", href: "/" },
@@ -124,10 +124,10 @@ export default function ArtifactViewerPage({
           <p className="text-sm text-text-2">No {label.toLowerCase()} artifact found.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-[180px_1fr] gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-[180px_minmax(0,1fr)] gap-4 min-w-0">
           {/* Version rail */}
           {versions.length > 1 && (
-            <div className="glass p-3 xl:max-h-[600px] overflow-y-auto">
+            <div className="glass p-3 xl:max-h-[600px] overflow-y-auto min-w-0">
               <div className="text-[10px] font-mono-display text-text-3 tracking-widest uppercase px-3 py-1.5 mb-1">
                 Versions
               </div>
@@ -152,7 +152,7 @@ export default function ArtifactViewerPage({
           )}
 
           {/* Main viewer */}
-          <div className={versions.length <= 1 ? "xl:col-span-2" : ""}>
+          <div className={`min-w-0 ${versions.length <= 1 ? "xl:col-span-2" : ""}`}>
             {Viewer ? (
               <ViewerErrorBoundary artifact={current}>
                 <Viewer artifact={current} />

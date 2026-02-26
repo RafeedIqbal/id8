@@ -28,4 +28,4 @@ class CodeSnapshotContent(BaseModel):
     files: list[CodeFile] = Field(..., description="All generated source files")
     build_command: str = Field(default="npm run build", description='e.g. "npm run build"')
     test_command: str = Field(default="npm test", description='e.g. "npm test"')
-    entry_point: str = Field(default="backend/app/main.py", description='e.g. "backend/app/main.py"')
+    entry_point: str = Field(default="src/app/page.tsx", description='e.g. "src/app/page.tsx"')

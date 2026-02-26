@@ -56,7 +56,10 @@ class GenerateDesignHandler(NodeHandler):
             or DesignProvider.STITCH_MCP
         )
         preferred_provider_name = str(preferred_provider)
-        constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
+        raw_constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
+        constraints = dict(raw_constraints) if isinstance(raw_constraints, dict) else {}
+        if project.title.strip():
+            constraints["project_title"] = project.title.strip()
         auth = get_default_stitch_auth()
 
         # 4. Check for rejection feedback (re-generation case)
@@ -107,6 +110,9 @@ class GenerateDesignHandler(NodeHandler):
             "provider_used": provider_used,
             **(output.metadata or {}),
         }
+        design_codegen_context = artifact_data["__design_metadata"].get("design_codegen_context")
+        if isinstance(design_codegen_context, dict):
+            artifact_data["design_codegen_context"] = design_codegen_context
         if (
             preferred_provider_name == str(DesignProvider.STITCH_MCP)
             and str(provider_used) == str(DesignProvider.INTERNAL_SPEC)

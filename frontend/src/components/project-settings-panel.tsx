@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useUpdateProject, useRestartProject } from "@/lib/hooks";
 import type { Project } from "@/types/domain";
-import { DEFAULT_STACK, STACK_OPTIONS, validateStackHostability } from "@/types/stack";
-import type { StackJson } from "@/types/stack";
+import { DEFAULT_STACK, FIXED_STACK_LABELS } from "@/types/stack";
 
 export function ProjectSettingsPanel({
   project,
@@ -13,34 +12,22 @@ export function ProjectSettingsPanel({
   project: Project;
   onClose: () => void;
 }) {
+  const [title, setTitle] = useState(project.title);
   const [prompt, setPrompt] = useState(project.initialPrompt);
-  const [stack, setStack] = useState<StackJson>(
-    (project.stackJson as unknown as StackJson) ?? DEFAULT_STACK
-  );
-  const [hostError, setHostError] = useState<string | null>(null);
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
 
   const updateProject = useUpdateProject(project.id);
   const restartProject = useRestartProject(project.id);
 
-  useEffect(() => {
-    setHostError(validateStackHostability(stack));
-  }, [stack]);
-
-  function updateStack<K extends keyof StackJson>(key: K, value: StackJson[K]) {
-    setStack((prev) => ({ ...prev, [key]: value }));
-  }
-
   async function handleSave() {
-    const changes: { initial_prompt?: string; stack_json?: StackJson } = {};
+    const changes: { title?: string; initial_prompt?: string } = {};
+    if (title.trim() !== project.title) {
+      changes.title = title.trim();
+    }
     if (prompt.trim() !== project.initialPrompt) {
       changes.initial_prompt = prompt.trim();
     }
-    const currentStack = (project.stackJson as unknown as StackJson) ?? DEFAULT_STACK;
-    if (JSON.stringify(stack) !== JSON.stringify(currentStack)) {
-      changes.stack_json = stack;
-    }
-    if (!changes.initial_prompt && !changes.stack_json) return;
+    if (!changes.title && !changes.initial_prompt) return;
     await updateProject.mutateAsync(changes);
     onClose();
   }
@@ -69,6 +56,18 @@ export function ProjectSettingsPanel({
       {/* Prompt */}
       <div>
         <label className="block text-sm font-medium text-text-1 mb-2">
+          Project Title
+        </label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-text-1 mb-2">
           Initial Prompt
         </label>
         <textarea
@@ -82,32 +81,23 @@ export function ProjectSettingsPanel({
       {/* Stack config */}
       <div>
         <label className="block text-sm font-medium text-text-1 mb-2">
-          Stack Configuration
+          Runtime Profile
         </label>
         <div className="grid grid-cols-2 gap-3">
-          {(Object.keys(STACK_OPTIONS) as Array<keyof typeof STACK_OPTIONS>).map((key) => (
+          {FIXED_STACK_LABELS.map(({ key, label }) => (
             <div key={key}>
               <label className="block text-[10px] font-mono-display text-text-3 tracking-widest uppercase mb-1">
-                {key.replace(/_/g, " ")}
+                {label}
               </label>
-              <select
-                value={stack[key]}
-                onChange={(e) => updateStack(key, e.target.value as never)}
-                className="w-full text-xs"
-                disabled={key === "hosting_frontend"}
-              >
-                {STACK_OPTIONS[key].map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
+              <div className="w-full text-xs bg-surface-2 border border-border-1 rounded-lg px-3 py-2">
+                {DEFAULT_STACK[key]}
+              </div>
             </div>
           ))}
         </div>
-        {hostError && (
-          <p className="text-xs text-error mt-2">{hostError}</p>
-        )}
+        <p className="text-xs text-text-3 mt-2">
+          Stack selection is locked to ensure zero-config Vercel deployments.
+        </p>
       </div>
 
       {/* Errors */}
@@ -126,7 +116,7 @@ export function ProjectSettingsPanel({
       <div className="flex flex-wrap gap-2 pt-2">
         <button
           onClick={handleSave}
-          disabled={isPending || !!hostError}
+          disabled={isPending || !title.trim() || !prompt.trim()}
           className="btn btn-primary"
         >
           {updateProject.isPending ? "Saving\u2026" : "Save"}
@@ -134,7 +124,7 @@ export function ProjectSettingsPanel({
         {showRestartConfirm ? (
           <button
             onClick={handleSaveAndRestart}
-            disabled={isPending || !!hostError}
+            disabled={isPending || !title.trim() || !prompt.trim()}
             className="btn bg-warning text-surface-0 hover:bg-warning/90"
           >
             {restartProject.isPending ? "Restarting\u2026" : "Confirm Save & Restart"}
@@ -142,7 +132,7 @@ export function ProjectSettingsPanel({
         ) : (
           <button
             onClick={() => setShowRestartConfirm(true)}
-            disabled={isPending || !!hostError}
+            disabled={isPending || !title.trim() || !prompt.trim()}
             className="btn btn-ghost"
           >
             Save &amp; Restart

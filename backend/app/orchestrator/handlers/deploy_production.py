@@ -4,26 +4,16 @@ Executes the full deployment pipeline after a deploy approval has been
 granted:
 
   1. Verify the deploy-approval event exists for this run.
-  2. Extract SQL migration files from the latest code_snapshot artifact.
-  3. Provision Supabase (create project if absent, run migrations).
-  4. Deploy to Vercel (create project if absent, inject env vars, trigger
+  2. Deploy to Vercel (create project if absent, inject env vars, trigger
      deployment, poll until READY).
-  5. Health-check the live production URL.
-  6. Create a ``DeploymentRecord`` in the database.
-  7. Update ``projects.live_deployment_url``.
-  8. Return a ``deploy_report`` artifact (persisted by the engine).
-
-Secret safety:
-- Supabase service-role key is NEVER included in artifact outputs or
-  passed to Vercel.
-- Only publishable keys (``NEXT_PUBLIC_*``) are injected into Vercel env.
-- ``secret_filter.assert_no_secrets`` acts as a final gate.
+  3. Health-check the live production URL.
+  4. Create a ``DeploymentRecord`` in the database.
+  5. Update ``projects.live_deployment_url``.
+  6. Return a ``deploy_report`` artifact (persisted by the engine).
 """
 from __future__ import annotations
 
 import logging
-import secrets
-import string
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,7 +21,6 @@ import httpx
 from sqlalchemy import select
 
 from app.config import settings
-from app.deploy.supabase import SupabaseError, provision_supabase
 from app.deploy.vercel import VercelDeployTimeoutError, VercelError, deploy_to_vercel
 from app.github.client import _parse_owner_repo
 from app.models.approval_event import ApprovalEvent
@@ -45,13 +34,11 @@ from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.deploy_production")
 
-_DB_PASS_ALPHABET = string.ascii_letters + string.digits
-_DB_PASS_LENGTH = 32
 _HEALTH_CHECK_TIMEOUT = 30.0
 
 
 class DeployProductionHandler(NodeHandler):
-    """Run the full Supabase + Vercel deployment pipeline."""
+    """Run the Vercel-only deployment pipeline."""
 
     async def execute(self, ctx: RunContext) -> NodeResult:
         await emit_audit_event(
@@ -90,9 +77,6 @@ class DeployProductionHandler(NodeHandler):
                 outcome="failure",
                 error="No code_snapshot artifact found; DeployProduction cannot proceed",
             )
-
-        files: list[dict[str, str]] = snapshot.get("files", [])
-        sql_files = _extract_sql_files(files)
 
         # 3. Load project for repo URL and existing deploy metadata.
         project = await _load_project(ctx)
@@ -138,44 +122,11 @@ class DeployProductionHandler(NodeHandler):
                 provider_payload={"error": f"Cannot parse GitHub repo URL: {exc}", "stage": "precheck"},
             )
 
-        # 6. Provision Supabase (optional — skipped if no access token).
-        supabase_meta: dict[str, Any] = {}
-        if settings.supabase_access_token and settings.supabase_org_id:
-            project_name = _project_name(ctx)
-            db_pass = _generate_db_pass()
-            existing_ref = _extract_existing_supabase_ref(ctx)
-            try:
-                supabase_meta = await provision_supabase(
-                    access_token=settings.supabase_access_token,
-                    org_id=settings.supabase_org_id,
-                    project_name=project_name,
-                    db_pass=db_pass,
-                    sql_files=sql_files,
-                    existing_ref=existing_ref,
-                )
-            except SupabaseError as exc:
-                return await _fail_deployment(
-                    ctx,
-                    project,
-                    error=f"Supabase provisioning failed: {exc}",
-                    provider_payload={"error": str(exc), "stage": "supabase"},
-                )
-        else:
-            logger.info(
-                "SUPABASE_ACCESS_TOKEN / SUPABASE_ORG_ID not configured — "
-                "skipping Supabase provisioning for run=%s",
-                ctx.run_id,
-            )
-
-        # 7. Build publishable env vars for Vercel.
+        # 6. Build publishable env vars for Vercel.
         env_vars: dict[str, str] = {}
-        if supabase_meta.get("supabase_url"):
-            env_vars["NEXT_PUBLIC_SUPABASE_URL"] = supabase_meta["supabase_url"]
-        if supabase_meta.get("supabase_anon_key"):
-            env_vars["NEXT_PUBLIC_SUPABASE_ANON_KEY"] = supabase_meta["supabase_anon_key"]
         await _record_env_injection_audit(ctx, env_vars.keys())
 
-        # 8. Vercel deployment.
+        # 7. Vercel deployment.
         existing_project_id = _extract_existing_vercel_project_id(ctx)
         try:
             vercel_meta = await deploy_to_vercel(
@@ -215,7 +166,7 @@ class DeployProductionHandler(NodeHandler):
 
         production_url: str = vercel_meta.get("production_url") or vercel_meta.get("deployment_url", "")
 
-        # 9. Health check.
+        # 8. Health check.
         health_ok, health_detail = await _health_check(production_url)
         if not health_ok:
             return await _fail_deployment(
@@ -224,17 +175,15 @@ class DeployProductionHandler(NodeHandler):
                 error=f"Production health check failed for {production_url}: {health_detail}",
                 provider_payload={
                     **vercel_meta,
-                    "supabase": supabase_meta,
                     "health_check": {"ok": health_ok, "detail": health_detail},
                 },
                 rollback_candidate=True,
             )
 
-        # 10. Persist DeploymentRecord.
+        # 9. Persist DeploymentRecord.
         end_time = datetime.now(tz=UTC)
         provider_payload: dict[str, Any] = {
             **vercel_meta,
-            "supabase": supabase_meta,
             "health_check": {"ok": health_ok, "detail": health_detail},
             "started_at": start_time.isoformat(),
             "finished_at": end_time.isoformat(),
@@ -246,7 +195,7 @@ class DeployProductionHandler(NodeHandler):
             provider_payload=provider_payload,
         )
 
-        # 11. Update project.live_deployment_url.
+        # 10. Update project.live_deployment_url.
         project.live_deployment_url = production_url
         project.updated_at = end_time
         await ctx.db.flush()
@@ -273,12 +222,10 @@ class DeployProductionHandler(NodeHandler):
             "live_url": production_url,
             "environment": "production",
             "vercel": vercel_meta,
-            "supabase": supabase_meta,
             "health_check": {"ok": health_ok, "detail": health_detail},
             "github_repo": github_url,
             "started_at": start_time.isoformat(),
             "finished_at": end_time.isoformat(),
-            "migrations_applied": supabase_meta.get("migrations_applied", []),
         }
 
         return NodeResult(
@@ -287,7 +234,6 @@ class DeployProductionHandler(NodeHandler):
             context_updates={
                 "live_url": production_url,
                 "vercel_project_id": vercel_meta.get("vercel_project_id"),
-                "supabase_ref": supabase_meta.get("supabase_ref"),
             },
         )
 
@@ -331,7 +277,7 @@ async def _load_project(ctx: RunContext) -> Project | None:
 
 
 def _extract_sql_files(files: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Return files that look like SQL migrations."""
+    """Legacy helper retained for compatibility with existing tests/tooling."""
     return [
         f
         for f in files
@@ -346,15 +292,6 @@ def _extract_sql_files(files: list[dict[str, str]]) -> list[dict[str, str]]:
 def _project_name(ctx: RunContext) -> str:
     short = str(ctx.project_id).replace("-", "")[:12]
     return f"id8-{short}"
-
-
-def _generate_db_pass(length: int = _DB_PASS_LENGTH) -> str:
-    return "".join(secrets.choice(_DB_PASS_ALPHABET) for _ in range(length))
-
-
-def _extract_existing_supabase_ref(ctx: RunContext) -> str | None:
-    """Return a previously stored supabase_ref from workflow context."""
-    return ctx.workflow_payload.get("supabase_ref")
 
 
 def _extract_existing_vercel_project_id(ctx: RunContext) -> str | None:

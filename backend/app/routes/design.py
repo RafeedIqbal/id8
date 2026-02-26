@@ -332,6 +332,9 @@ async def submit_design_feedback(
     if body.target_component_id:
         merged_meta["target_component_id"] = body.target_component_id
     artifact_content["__design_metadata"] = merged_meta
+    design_codegen_context = merged_meta.get("design_codegen_context")
+    if isinstance(design_codegen_context, dict):
+        artifact_content["design_codegen_context"] = design_codegen_context
 
     artifact = ProjectArtifact(
         project_id=project_id,

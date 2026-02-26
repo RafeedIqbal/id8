@@ -62,6 +62,12 @@ _TIMELINE_EVENT_TYPES = (
     "orchestrator.run_failed",
     "orchestrator.run_requeued",
 )
+_ATTEMPT_START_EVENT_TYPES = {
+    "orchestrator.run_started",
+    "orchestrator.run_resumed",
+    "orchestrator.run_replayed",
+    "orchestrator.run_requeued",
+}
 
 _TERMINAL_RUN_STATUSES = {ProjectStatus.DEPLOYED, ProjectStatus.FAILED}
 _TERMINAL_RUN_NODES = {NodeName.END_SUCCESS, NodeName.END_FAILED}
@@ -150,6 +156,70 @@ async def _load_timeline_events(
             )
         )
     return events
+
+
+def _is_failure_outcome(outcome: str | None) -> bool:
+    if not outcome:
+        return False
+    normalized = outcome.strip().lower()
+    return normalized in {"failure", "failed"}
+
+
+def _is_terminal_node(node_name: str | None) -> bool:
+    if not node_name:
+        return False
+    return node_name in {str(NodeName.END_SUCCESS), str(NodeName.END_FAILED)}
+
+
+def _latest_attempt_timeline(events: list[RunTimelineEvent]) -> list[RunTimelineEvent]:
+    if len(events) <= 1:
+        return events
+    for idx in range(len(events) - 1, -1, -1):
+        if events[idx].event_type in _ATTEMPT_START_EVENT_TYPES:
+            return events[idx:]
+    return events
+
+
+async def _infer_failed_node_for_run(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run: ProjectRun,
+) -> NodeName | None:
+    """Infer the failed node from the latest attempt segment."""
+    try:
+        current_node = NodeName(run.current_node)
+    except ValueError:
+        current_node = None
+
+    if current_node is not None and current_node not in _TERMINAL_RUN_NODES:
+        return current_node
+
+    events = await _load_timeline_events(db=db, project_id=project_id, run_id=run.id)
+    latest_events = _latest_attempt_timeline(events)
+
+    for event in reversed(latest_events):
+        if (
+            event.event_type == "orchestrator.node_transition"
+            and event.to_node == str(NodeName.END_FAILED)
+            and event.from_node
+            and not _is_terminal_node(event.from_node)
+            and _is_failure_outcome(event.outcome)
+        ):
+            try:
+                return NodeName(event.from_node)
+            except ValueError:
+                continue
+
+    for event in reversed(latest_events):
+        candidate = event.from_node or event.to_node
+        if candidate and not _is_terminal_node(candidate):
+            try:
+                return NodeName(candidate)
+            except ValueError:
+                continue
+
+    return None
 
 
 async def _was_node_previously_reached(
@@ -444,6 +514,28 @@ async def create_run(
                 status_code=409,
                 detail=f"Node {resume_node} was not reached by the failed run",
             )
+        if replay_mode == ReplayMode.RETRY_FAILED:
+            failed_node = await _infer_failed_node_for_run(
+                db=db,
+                project_id=project_id,
+                run=previous_run,
+            )
+            if failed_node is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Unable to infer failed node from run history. "
+                        "Use replay_from_node to restart from a chosen step."
+                    ),
+                )
+            if resume_node != failed_node:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "retry_failed can only resume the failed node "
+                        f"({failed_node}). Use replay_from_node for rollback."
+                    ),
+                )
 
         from_node = previous_run.current_node
         previous_run.current_node = resume_node

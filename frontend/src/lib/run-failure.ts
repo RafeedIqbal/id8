@@ -2,6 +2,13 @@ import type { RunTimelineEvent } from "@/types/domain";
 
 export const TERMINAL_NODES = new Set(["EndSuccess", "EndFailed"]);
 
+const ATTEMPT_START_EVENTS = new Set([
+  "orchestrator.run_started",
+  "orchestrator.run_resumed",
+  "orchestrator.run_replayed",
+  "orchestrator.run_requeued",
+]);
+
 function isFailureOutcome(outcome: string | undefined): boolean {
   if (!outcome) return false;
   const normalized = outcome.trim().toLowerCase();
@@ -12,6 +19,21 @@ function isNonTerminal(node: string | undefined): node is string {
   return Boolean(node && !TERMINAL_NODES.has(node));
 }
 
+export function getLatestAttemptTimeline(
+  timeline: RunTimelineEvent[] | undefined
+): RunTimelineEvent[] {
+  const events = timeline ?? [];
+  if (events.length <= 1) return events;
+
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (ATTEMPT_START_EVENTS.has(event.eventType)) {
+      return events.slice(i);
+    }
+  }
+  return events;
+}
+
 export function inferFailureNode(
   currentNode: string | undefined,
   timeline: RunTimelineEvent[] | undefined,
@@ -20,7 +42,7 @@ export function inferFailureNode(
   if (!isFailed) return undefined;
   if (isNonTerminal(currentNode)) return currentNode;
 
-  const events = timeline ?? [];
+  const events = getLatestAttemptTimeline(timeline);
 
   // Prefer the newest concrete transition into EndFailed.
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -64,3 +86,4 @@ export function resolveResumeNode(
   if (isNonTerminal(currentNode)) return currentNode;
   return inferFailureNode(currentNode, timeline, isFailed) ?? "IngestPrompt";
 }
+

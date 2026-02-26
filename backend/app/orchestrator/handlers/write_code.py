@@ -112,13 +112,6 @@ class WriteCodeHandler(NodeHandler):
         from app.llm.router import resolve_profile
 
         # 1. Verify required inputs.
-        tech_plan = _clean_artifact_content(ctx.previous_artifacts.get("tech_plan"))
-        if not tech_plan:
-            return NodeResult(
-                outcome="failure",
-                error="No approved tech plan artifact available",
-            )
-
         design = _clean_artifact_content(ctx.previous_artifacts.get("design_spec"))
         if not design:
             return NodeResult(
@@ -127,6 +120,7 @@ class WriteCodeHandler(NodeHandler):
             )
 
         prd = _clean_artifact_content(ctx.previous_artifacts.get("prd"))
+        legacy_tech_plan = _clean_artifact_content(ctx.previous_artifacts.get("tech_plan"))
 
         # 2. Check for security gate feedback (remediation loop).
         feedback = await _load_security_feedback(ctx)
@@ -134,10 +128,12 @@ class WriteCodeHandler(NodeHandler):
         # 3. Build generation context.
         profile = resolve_profile(ctx.current_node)
         artifacts_for_prompt: dict[str, Any] = {
-            "tech_plan": tech_plan,
             "design_spec": design,
             "prd": prd,
         }
+        if legacy_tech_plan:
+            # Legacy runs may still contain a tech_plan artifact.
+            artifacts_for_prompt["tech_plan"] = legacy_tech_plan
 
         # Include previous code snapshot if we're in a remediation loop.
         if feedback:
@@ -672,15 +668,16 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
         for path in file_paths
     )
 
+    if has_python_files:
+        errors.append(
+            "Python files are not allowed for the fixed runtime profile. "
+            "Generate a Next.js full-stack project for Vercel."
+        )
+
     # Required files.
     entry_point = snapshot.get("entry_point", "")
-    if not entry_point:
-        if has_python_files:
-            errors.append("Entry point is missing for backend Python runtime")
-        elif has_frontend_assets and not _has_frontend_entrypoint(file_paths):
-            errors.append("Frontend entry point is missing")
-    elif entry_point not in file_paths and has_python_files:
-        errors.append(f"Entry point '{entry_point}' not found in generated files")
+    if not entry_point and has_frontend_assets and not _has_frontend_entrypoint(file_paths):
+        errors.append("Frontend entry point is missing")
     elif entry_point not in file_paths and has_frontend_assets and not _has_frontend_entrypoint(file_paths):
         errors.append(
             f"Entry point '{entry_point}' not found and no frontend runtime entry file detected"
@@ -688,6 +685,8 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
 
     if not any(_is_dependency_manifest(path) for path in file_paths):
         errors.append("No dependency manifest found (package.json, requirements.txt, etc.)")
+    if not _has_nextjs_dependency(files):
+        errors.append("package.json must include next.js dependencies for Vercel deployment")
 
     if not any(_is_configuration_file(path) for path in file_paths):
         errors.append("No configuration file found (e.g. Dockerfile, .env.example, tsconfig)")
@@ -791,24 +790,6 @@ def _normalize_vercel_function_pattern(pattern: str) -> str:
 
 def _infer_entry_point(file_paths: list[str]) -> str:
     path_set = set(file_paths)
-    has_python_files = any(path.endswith(".py") for path in path_set)
-
-    for candidate in (
-        "backend/app/main.py",
-        "app/main.py",
-        "backend/main.py",
-        "main.py",
-    ):
-        if candidate in path_set:
-            return candidate
-    for path in file_paths:
-        if path.endswith("/main.py"):
-            return path
-
-    if has_python_files:
-        # Keep backend snapshots strict: Python services must include an
-        # executable main entrypoint.
-        return "backend/app/main.py"
 
     for candidate in (
         "frontend/src/main.tsx",
@@ -831,7 +812,7 @@ def _infer_entry_point(file_paths: list[str]) -> str:
 
     if file_paths:
         return sorted(file_paths)[0]
-    return "backend/app/main.py"
+    return "src/app/page.tsx"
 
 
 def _infer_build_command(file_paths: list[str]) -> str:
@@ -856,6 +837,30 @@ def _is_dependency_manifest(path: str) -> bool:
 
 def _is_configuration_file(path: str) -> bool:
     return any(path.endswith(name) for name in _CONFIG_FILE_NAMES)
+
+
+def _has_nextjs_dependency(files: list[dict[str, Any]]) -> bool:
+    """Return True when at least one package manifest includes next.js."""
+    for file_data in files:
+        path = str(file_data.get("path", "")).strip()
+        if not path.endswith("package.json"):
+            continue
+        content = file_data.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        try:
+            package_json = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(package_json, dict):
+            continue
+        deps = package_json.get("dependencies")
+        dev_deps = package_json.get("devDependencies")
+        if isinstance(deps, dict) and "next" in deps:
+            return True
+        if isinstance(dev_deps, dict) and "next" in dev_deps:
+            return True
+    return False
 
 
 def _build_python_module_index(file_paths: set[str]) -> set[str]:

@@ -19,6 +19,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 type ProjectWire = {
   id: string;
   owner_user_id: string;
+  title: string;
   initial_prompt: string;
   status: ProjectStatus;
   github_repo_url?: string;
@@ -174,6 +175,7 @@ function toProject(data: ProjectWire): Project {
   return {
     id: data.id,
     ownerUserId: data.owner_user_id,
+    title: data.title,
     initialPrompt: data.initial_prompt,
     status: data.status,
     githubRepoUrl: data.github_repo_url,
@@ -281,13 +283,14 @@ export async function listProjects(): Promise<{ items: ProjectListItem[] }> {
 }
 
 export async function createProject(
+  title: string,
   initial_prompt: string,
   constraints?: Record<string, unknown>,
   stack_json?: StackJson
 ): Promise<Project> {
   const data = await request<ProjectWire>("/v1/projects", {
     method: "POST",
-    body: JSON.stringify({ initial_prompt, constraints, stack_json }),
+    body: JSON.stringify({ title, initial_prompt, constraints, stack_json }),
   });
   return toProject(data);
 }
@@ -303,7 +306,7 @@ export async function deleteProject(id: string): Promise<{ id: string; deleted_a
 
 export async function updateProject(
   id: string,
-  body: { initial_prompt?: string; stack_json?: StackJson }
+  body: { title?: string; initial_prompt?: string; stack_json?: StackJson }
 ): Promise<Project> {
   const data = await request<ProjectWire>(`/v1/projects/${id}`, {
     method: "PATCH",

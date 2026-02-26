@@ -345,6 +345,8 @@ components:
     CreateProjectRequest:
       type: object
       properties:
+        title:
+          type: string
         initial_prompt:
           type: string
         constraints:
@@ -353,10 +355,13 @@ components:
         stack_json:
           $ref: '#/components/schemas/StackJson'
       required:
+        - title
         - initial_prompt
     UpdateProjectRequest:
       type: object
       properties:
+        title:
+          type: string
         initial_prompt:
           type: string
         stack_json:
@@ -380,22 +385,22 @@ components:
       properties:
         frontend_framework:
           type: string
-          enum: [nextjs, react, vue, svelte]
+          enum: [nextjs]
         backend_framework:
           type: string
-          enum: [fastapi, express, nestjs, django]
+          enum: [nextjs]
         database:
           type: string
-          enum: [postgresql, mysql, sqlite]
+          enum: [none]
         database_provider:
           type: string
-          enum: [supabase, neon, planetscale, local]
+          enum: [none]
         hosting_frontend:
           type: string
           enum: [vercel]
         hosting_backend:
           type: string
-          enum: [supabase, vercel]
+          enum: [vercel]
       required:
         - frontend_framework
         - backend_framework
@@ -467,6 +472,8 @@ components:
         owner_user_id:
           type: string
           format: uuid
+        title:
+          type: string
         initial_prompt:
           type: string
         status:
@@ -489,6 +496,7 @@ components:
       required:
         - id
         - owner_user_id
+        - title
         - initial_prompt
         - status
         - created_at

@@ -34,6 +34,12 @@ _DEFAULT_STITCH_MODEL_ID = "GEMINI_3_FLASH"
 _DEFAULT_DEVICE_TYPE = "DESKTOP"
 _ALLOWED_STITCH_MODEL_IDS = {"GEMINI_3_PRO", "GEMINI_3_FLASH"}
 _ALLOWED_STITCH_DEVICE_TYPES = {"MOBILE", "DESKTOP", "TABLET", "AGNOSTIC"}
+_MAX_LIST_SCREEN_ITEMS = 16
+_MAX_CONTEXT_SCREENS = 8
+_MAX_GET_SCREEN_CALLS = 6
+_MAX_SCREEN_PREVIEWS = 4
+_MAX_SCREEN_ASSETS = 8
+_MAX_COMPONENT_REGIONS = 16
 
 # ---------------------------------------------------------------------------
 # Canonical Stitch MCP tool inventory
@@ -109,7 +115,10 @@ class StitchMcpProvider(DesignProvider):
         prompt = _build_generation_prompt(prd_content, constraints)
         project_id = await self._ensure_project_id(
             auth=auth,
-            suggested_name=_project_name_from_prd(prd_content),
+            suggested_name=_project_name_from_prd(
+                prd_content,
+                preferred_title=str(constraints.get("project_title", "")).strip(),
+            ),
         )
         model_id = _resolve_model_id(constraints)
         device_type = _resolve_device_type(constraints)
@@ -128,6 +137,11 @@ class StitchMcpProvider(DesignProvider):
         elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 
         output = _parse_stitch_response(raw)
+        design_codegen_context = await self._build_design_codegen_context(
+            auth=auth,
+            project_id=project_id,
+            seed_screen_ids=[screen.id for screen in output.screens],
+        )
         output.metadata.update({
             "provider": "stitch_mcp",
             "endpoint": _endpoint(),
@@ -137,6 +151,7 @@ class StitchMcpProvider(DesignProvider):
             "stitch_project_url": _project_url(project_id),
             "stitch_model_id": model_id,
             "stitch_device_type": device_type,
+            "design_codegen_context": design_codegen_context,
             **auth.redacted_summary(),
         })
         return output
@@ -180,6 +195,14 @@ class StitchMcpProvider(DesignProvider):
         elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 
         output = _parse_stitch_response(raw)
+        design_codegen_context = await self._build_design_codegen_context(
+            auth=auth,
+            project_id=project_id,
+            seed_screen_ids=[
+                *selected_screen_ids,
+                *[screen.id for screen in output.screens],
+            ],
+        )
         output.metadata.update({
             "provider": "stitch_mcp",
             "endpoint": _endpoint(),
@@ -192,6 +215,7 @@ class StitchMcpProvider(DesignProvider):
             "stitch_device_type": device_type,
             "stitch_edit_tool": tool,
             "selected_screen_ids": selected_screen_ids,
+            "design_codegen_context": design_codegen_context,
             **auth.redacted_summary(),
         })
         return output
@@ -313,6 +337,123 @@ class StitchMcpProvider(DesignProvider):
             raise StitchRuntimeError("Stitch create_project did not return project_id")
         return created_id
 
+    async def _build_design_codegen_context(
+        self,
+        *,
+        auth: StitchAuthContext,
+        project_id: str,
+        seed_screen_ids: list[str],
+    ) -> dict[str, Any]:
+        """Fetch additional Stitch context so codegen can mirror the design output."""
+        context: dict[str, Any] = {
+            "provider": "stitch_mcp",
+            "project_id": project_id,
+            "screens": [],
+        }
+
+        try:
+            listed = await self._call_stitch(
+                tool="list_screens",
+                params={"projectId": project_id},
+                auth=auth,
+            )
+        except StitchRuntimeError as exc:
+            logger.warning(
+                "Stitch list_screens enrichment failed for project=%s: %s",
+                project_id,
+                exc,
+            )
+            context["enrichment_error"] = str(exc)
+            return context
+
+        summaries = _extract_screen_summaries(listed)[:_MAX_LIST_SCREEN_ITEMS]
+        context["listed_screen_count"] = len(summaries)
+
+        ordered_ids: list[str] = []
+        seen_ids: set[str] = set()
+
+        for raw_id in seed_screen_ids:
+            normalized = _normalize_screen_id(raw_id)
+            if normalized and normalized not in seen_ids:
+                seen_ids.add(normalized)
+                ordered_ids.append(normalized)
+
+        for summary in summaries:
+            screen_id = str(summary.get("id", "")).strip()
+            if screen_id and screen_id not in seen_ids:
+                seen_ids.add(screen_id)
+                ordered_ids.append(screen_id)
+
+        summary_by_id = {
+            str(summary.get("id", "")).strip(): summary
+            for summary in summaries
+            if isinstance(summary, dict)
+        }
+
+        failed_screen_ids: list[str] = []
+        screens: list[dict[str, Any]] = []
+
+        for screen_id in ordered_ids[:_MAX_GET_SCREEN_CALLS]:
+            detail = await self._get_screen_detail(
+                auth=auth,
+                project_id=project_id,
+                screen_id=screen_id,
+                summary=summary_by_id.get(screen_id),
+            )
+            if detail is None:
+                failed_screen_ids.append(screen_id)
+                continue
+            screens.append(_screen_to_codegen_context(detail, fallback_id=screen_id))
+
+        if not screens:
+            # Fallback to list_screens payload when detailed fetch is unavailable.
+            for summary in summaries[:_MAX_CONTEXT_SCREENS]:
+                fallback_id = str(summary.get("id", "")).strip()
+                screens.append(_summary_to_codegen_context(summary, fallback_id=fallback_id))
+
+        context["screens"] = screens[:_MAX_CONTEXT_SCREENS]
+        context["available_screen_ids"] = ordered_ids[:_MAX_LIST_SCREEN_ITEMS]
+        if failed_screen_ids:
+            context["failed_screen_ids"] = failed_screen_ids
+        return context
+
+    async def _get_screen_detail(
+        self,
+        *,
+        auth: StitchAuthContext,
+        project_id: str,
+        screen_id: str,
+        summary: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        params = {"projectId": project_id, "screenId": screen_id}
+        if summary:
+            resource_name = summary.get("resource_name")
+            if isinstance(resource_name, str) and resource_name.strip():
+                params["name"] = resource_name
+
+        try:
+            raw = await self._call_stitch(
+                tool="get_screen",
+                params=params,
+                auth=auth,
+            )
+        except StitchRuntimeError as exc:
+            logger.warning(
+                "Stitch get_screen enrichment failed for project=%s screen=%s: %s",
+                project_id,
+                screen_id,
+                exc,
+            )
+            return None
+
+        raw_screens = _extract_raw_screen_objects(raw)
+        if raw_screens:
+            return raw_screens[0]
+
+        if isinstance(summary, dict):
+            return summary
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Prompt builders
@@ -378,7 +519,11 @@ def _build_regeneration_prompt(previous: DesignOutput, feedback: DesignFeedback)
 # Response parser
 # ---------------------------------------------------------------------------
 
-def _project_name_from_prd(prd_content: dict[str, Any]) -> str:
+def _project_name_from_prd(prd_content: dict[str, Any], preferred_title: str = "") -> str:
+    cleaned_preferred = _clean_project_title(preferred_title)
+    if cleaned_preferred:
+        return cleaned_preferred
+
     for key in ("title", "project_title", "name"):
         cleaned = _clean_project_title(str(prd_content.get(key, "")).strip())
         if cleaned:
@@ -913,6 +1058,199 @@ def _extract_assets(raw_screen: dict[str, Any]) -> list[str]:
                     add_asset(val)
 
     return assets
+
+
+def _extract_screen_summaries(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a normalized list of screen metadata from list_screens payload."""
+    summaries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for raw_screen in _extract_raw_screen_objects(raw):
+        screen_id = ""
+        for candidate in (
+            raw_screen.get("screenId"),
+            raw_screen.get("screen_id"),
+            raw_screen.get("id"),
+            raw_screen.get("name"),
+        ):
+            if isinstance(candidate, str):
+                normalized = _normalize_screen_id(candidate)
+                if normalized:
+                    screen_id = normalized
+                    break
+        if not screen_id or screen_id in seen_ids:
+            continue
+        seen_ids.add(screen_id)
+
+        resource_name = raw_screen.get("name")
+        screen_name = raw_screen.get("title") or raw_screen.get("displayName") or resource_name or screen_id
+        if isinstance(screen_name, str) and "/screens/" in screen_name:
+            screen_name = screen_id
+
+        summaries.append(
+            {
+                "id": screen_id,
+                "resource_name": resource_name if isinstance(resource_name, str) else "",
+                "name": str(screen_name).strip() if isinstance(screen_name, str) else screen_id,
+                "description": str(raw_screen.get("description", "")).strip(),
+                "preview_images": _extract_preview_images(raw_screen),
+                "assets": _extract_assets(raw_screen)[:_MAX_SCREEN_ASSETS],
+                "component_regions": _extract_component_regions(raw_screen),
+                "render_metadata": _extract_render_metadata(raw_screen),
+            }
+        )
+
+    return summaries
+
+
+def _extract_preview_images(raw_screen: dict[str, Any]) -> list[str]:
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        candidate = value.strip()
+        if not candidate or candidate in seen:
+            return
+        if not _looks_like_image_asset(candidate):
+            return
+        seen.add(candidate)
+        images.append(candidate)
+
+    screenshot = raw_screen.get("screenshot")
+    if isinstance(screenshot, str):
+        add(screenshot)
+    elif isinstance(screenshot, dict):
+        for key in ("downloadUrl", "url", "name"):
+            value = screenshot.get(key)
+            if isinstance(value, str):
+                add(value)
+
+    for asset in _extract_assets(raw_screen):
+        add(asset)
+
+    return images[:_MAX_SCREEN_PREVIEWS]
+
+
+def _looks_like_image_asset(value: str) -> bool:
+    normalized = value.casefold()
+    return any(
+        token in normalized
+        for token in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".svg",
+            "image",
+            "screenshot",
+        )
+    )
+
+
+def _extract_component_regions(raw_screen: dict[str, Any]) -> list[dict[str, Any]]:
+    screen_metadata = raw_screen.get("screenMetadata")
+    if not isinstance(screen_metadata, dict):
+        return []
+
+    raw_regions = screen_metadata.get("componentRegions")
+    if not isinstance(raw_regions, list):
+        return []
+
+    regions: list[dict[str, Any]] = []
+    for index, raw_region in enumerate(raw_regions[:_MAX_COMPONENT_REGIONS]):
+        if not isinstance(raw_region, dict):
+            continue
+
+        region: dict[str, Any] = {
+            "id": str(
+                raw_region.get("id")
+                or raw_region.get("componentId")
+                or f"region-{index + 1}"
+            ),
+            "name": str(
+                raw_region.get("name")
+                or raw_region.get("label")
+                or f"Region {index + 1}"
+            ),
+            "type": str(raw_region.get("type") or raw_region.get("componentType") or "region"),
+        }
+
+        bounds = raw_region.get("bounds")
+        if isinstance(bounds, dict):
+            region["bounds"] = _as_string_key_dict(bounds)
+
+        for key in ("x", "y", "width", "height"):
+            value = raw_region.get(key)
+            if isinstance(value, (int, float)):
+                region[key] = value
+
+        regions.append(region)
+
+    return regions
+
+
+def _extract_render_metadata(raw_screen: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    screen_metadata = raw_screen.get("screenMetadata")
+    if isinstance(screen_metadata, dict):
+        for key in ("status", "statusMessage", "deviceType", "screenType", "viewport"):
+            value = screen_metadata.get(key)
+            if value is not None:
+                metadata[key] = value
+
+    for key in ("width", "height"):
+        value = raw_screen.get(key)
+        if isinstance(value, (int, float)):
+            metadata[key] = value
+
+    return metadata
+
+
+def _screen_to_codegen_context(raw_screen: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
+    parsed = _screen_from_raw(raw_screen, 0)
+    screen_id = parsed.id if parsed is not None else fallback_id
+    name = parsed.name if parsed is not None else (fallback_id or "Screen")
+    description = parsed.description if parsed is not None else ""
+
+    return {
+        "id": screen_id or fallback_id,
+        "name": name,
+        "description": description,
+        "preview_images": _extract_preview_images(raw_screen),
+        "assets": _extract_assets(raw_screen)[:_MAX_SCREEN_ASSETS],
+        "component_regions": _extract_component_regions(raw_screen),
+        "render_metadata": _extract_render_metadata(raw_screen),
+    }
+
+
+def _summary_to_codegen_context(summary: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
+    screen_id = str(summary.get("id", "")).strip() or fallback_id
+    return {
+        "id": screen_id,
+        "name": str(summary.get("name", "")).strip() or screen_id or "Screen",
+        "description": str(summary.get("description", "")).strip(),
+        "preview_images": [
+            value
+            for value in summary.get("preview_images", [])
+            if isinstance(value, str)
+        ][: _MAX_SCREEN_PREVIEWS],
+        "assets": [
+            value
+            for value in summary.get("assets", [])
+            if isinstance(value, str)
+        ][: _MAX_SCREEN_ASSETS],
+        "component_regions": [
+            value
+            for value in summary.get("component_regions", [])
+            if isinstance(value, dict)
+        ][: _MAX_COMPONENT_REGIONS],
+        "render_metadata": (
+            summary.get("render_metadata")
+            if isinstance(summary.get("render_metadata"), dict)
+            else {}
+        ),
+    }
 
 
 def _extract_suggestions(raw: dict[str, Any]) -> list[str]:

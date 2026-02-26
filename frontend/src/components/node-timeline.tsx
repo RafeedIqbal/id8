@@ -1,15 +1,47 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { PIPELINE_NODES, NODE_LABELS } from "@/lib/constants";
+import { useEffect, useMemo, useState } from "react";
+import { LEGACY_TECH_PLAN_NODES, NODE_LABELS, PIPELINE_NODES } from "@/lib/constants";
 import type { RunTimelineEvent } from "@/types/domain";
 import { formatTime } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { inferFailureNode } from "@/lib/run-failure";
+import { getLatestAttemptTimeline, inferFailureNode } from "@/lib/run-failure";
 
 type NodeState = "completed" | "current" | "pending" | "failed";
 
+const LEGACY_PIPELINE_NODES = [
+  "IngestPrompt",
+  "GeneratePRD",
+  "WaitPRDApproval",
+  "GenerateDesign",
+  "WaitDesignApproval",
+  "GenerateTechPlan",
+  "WaitTechPlanApproval",
+  "WriteCode",
+  "SecurityGate",
+  "PreparePR",
+  "WaitDeployApproval",
+  "DeployProduction",
+  "EndSuccess",
+  "EndFailed",
+] as const;
+
+function usesLegacyTechPlanNodes(
+  currentNode: string | undefined,
+  timeline: RunTimelineEvent[]
+): boolean {
+  const legacySet = new Set<string>(LEGACY_TECH_PLAN_NODES);
+  if (currentNode && legacySet.has(currentNode)) return true;
+  for (const event of timeline) {
+    if (legacySet.has(event.toNode) || (event.fromNode && legacySet.has(event.fromNode))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getNodeStates(
+  pipelineNodes: readonly string[],
   currentNode: string | undefined,
   timeline: RunTimelineEvent[],
   isFailed: boolean,
@@ -17,7 +49,6 @@ function getNodeStates(
 ): Map<string, { state: NodeState; timestamp?: string }> {
   const states = new Map<string, { state: NodeState; timestamp?: string }>();
 
-  // Build set of nodes actually entered (toNode), plus best-effort timestamps.
   const visited = new Set<string>();
   const timestamps = new Map<string, string>();
   for (const event of timeline) {
@@ -29,22 +60,25 @@ function getNodeStates(
   }
 
   const currentIdx = !isFailed && currentNode
-    ? PIPELINE_NODES.indexOf(currentNode as (typeof PIPELINE_NODES)[number])
+    ? pipelineNodes.indexOf(currentNode)
     : -1;
+  const failedIdx = isFailed && failedNode ? pipelineNodes.indexOf(failedNode) : -1;
 
-  for (const node of PIPELINE_NODES) {
-    const idx = PIPELINE_NODES.indexOf(node);
+  for (const node of pipelineNodes) {
+    const idx = pipelineNodes.indexOf(node);
     let state: NodeState = "pending";
 
     if (isFailed && failedNode) {
       if (node === failedNode) {
         state = "failed";
+      } else if (failedIdx >= 0 && idx < failedIdx) {
+        state = "completed";
       } else if (node !== "EndFailed" && visited.has(node)) {
         state = "completed";
       }
     } else {
       if (node === currentNode) {
-        state = isFailed ? "failed" : "current";
+        state = "current";
       } else if (visited.has(node) || (currentIdx >= 0 && idx < currentIdx)) {
         state = "completed";
       }
@@ -98,20 +132,30 @@ export function NodeTimeline({
 }) {
   const isFailed = status === "failed";
   const isTerminal = status === "failed" || status === "deployed";
-  const failedNode = inferFailureNode(currentNode, timeline, isFailed);
-  const nodeStates = getNodeStates(currentNode, timeline, isFailed, failedNode);
+  const latestTimeline = useMemo(() => getLatestAttemptTimeline(timeline), [timeline]);
+  const pipelineNodes = useMemo(
+    () => (
+      usesLegacyTechPlanNodes(currentNode, latestTimeline)
+        ? LEGACY_PIPELINE_NODES
+        : PIPELINE_NODES
+    ),
+    [currentNode, latestTimeline]
+  );
+  const failedNode = inferFailureNode(currentNode, latestTimeline, isFailed);
+  const nodeStates = getNodeStates(
+    pipelineNodes,
+    currentNode,
+    latestTimeline,
+    isFailed,
+    failedNode
+  );
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedNode(null);
-  }, [currentNode, status, timeline.length]);
+  }, [currentNode, status, latestTimeline.length]);
 
-  const defaultReplayMode: "retry_failed" | "replay_from_node" = isFailed
-    ? "retry_failed"
-    : "replay_from_node";
-
-  // Hide EndFailed when we can map failure to a concrete pipeline node.
-  const visibleNodes = PIPELINE_NODES.filter(
+  const visibleNodes = pipelineNodes.filter(
     (n) => n !== "EndFailed" || (isFailed && !failedNode)
   );
 
@@ -125,6 +169,8 @@ export function NodeTimeline({
         const canOpenMenu = Boolean(onReplay) && isTerminal && node !== "EndSuccess" && node !== "EndFailed";
         const canRestartFromNode = canOpenMenu && info.state !== "pending";
         const menuOpen = selectedNode === node && canOpenMenu;
+        const replayMode: "retry_failed" | "replay_from_node" =
+          isFailed && failedNode && node === failedNode ? "retry_failed" : "replay_from_node";
 
         return (
           <div key={node} className="timeline-node">
@@ -183,13 +229,13 @@ export function NodeTimeline({
                     type="button"
                     onClick={() => {
                       if (!onReplay || isActionPending) return;
-                      onReplay(node, defaultReplayMode);
+                      onReplay(node, replayMode);
                       setSelectedNode(null);
                     }}
                     disabled={isActionPending}
                     className={cn(
                       "text-[11px] font-mono-display rounded-md px-2 py-1 border transition-colors",
-                      isFailed
+                      replayMode === "retry_failed"
                         ? "text-error border-error/30 hover:bg-error-bg"
                         : "text-accent border-accent/30 hover:bg-accent-bg",
                       isActionPending && "opacity-60 cursor-not-allowed"
@@ -197,8 +243,8 @@ export function NodeTimeline({
                   >
                     {isActionPending
                       ? "Restarting\u2026"
-                      : isFailed
-                        ? "Retry From This Step"
+                      : replayMode === "retry_failed"
+                        ? "Retry Failed Step"
                         : "Replay From This Step"}
                   </button>
                 ) : (
@@ -214,3 +260,4 @@ export function NodeTimeline({
     </div>
   );
 }
+

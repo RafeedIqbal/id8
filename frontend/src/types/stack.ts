@@ -1,61 +1,37 @@
-export type FrontendFramework = "nextjs" | "react" | "vue" | "svelte";
-export type BackendFramework = "fastapi" | "express" | "nestjs" | "django";
-export type Database = "postgresql" | "mysql" | "sqlite";
-export type DatabaseProvider = "supabase" | "neon" | "planetscale" | "local";
-export type HostingFrontend = "vercel";
-export type HostingBackend = "supabase" | "vercel";
-
 export interface StackJson {
-  frontend_framework: FrontendFramework;
-  backend_framework: BackendFramework;
-  database: Database;
-  database_provider: DatabaseProvider;
-  hosting_frontend: HostingFrontend;
-  hosting_backend: HostingBackend;
+  frontend_framework: "nextjs";
+  backend_framework: "nextjs";
+  database: "none";
+  database_provider: "none";
+  hosting_frontend: "vercel";
+  hosting_backend: "vercel";
 }
 
 export const DEFAULT_STACK: StackJson = {
   frontend_framework: "nextjs",
-  backend_framework: "fastapi",
-  database: "postgresql",
-  database_provider: "supabase",
+  backend_framework: "nextjs",
+  database: "none",
+  database_provider: "none",
   hosting_frontend: "vercel",
-  hosting_backend: "supabase",
+  hosting_backend: "vercel",
 };
 
-export const STACK_OPTIONS = {
-  frontend_framework: ["nextjs", "react", "vue", "svelte"] as const,
-  backend_framework: ["fastapi", "express", "nestjs", "django"] as const,
-  database: ["postgresql", "mysql", "sqlite"] as const,
-  database_provider: ["supabase", "neon", "planetscale", "local"] as const,
-  hosting_frontend: ["vercel"] as const,
-  hosting_backend: ["supabase", "vercel"] as const,
-} as const;
+export const FIXED_STACK_LABELS: Array<{ key: keyof StackJson; label: string }> = [
+  { key: "frontend_framework", label: "Frontend" },
+  { key: "backend_framework", label: "Backend" },
+  { key: "database", label: "Database" },
+  { key: "database_provider", label: "Database Provider" },
+  { key: "hosting_frontend", label: "Frontend Hosting" },
+  { key: "hosting_backend", label: "Backend Hosting" },
+];
 
 export function validateStackHostability(stack: StackJson): string | null {
-  if (stack.hosting_frontend !== "vercel") {
-    return "Frontend hosting is locked to 'vercel' in MVP";
-  }
-  if (stack.hosting_backend !== "supabase" && stack.hosting_backend !== "vercel") {
-    return "Backend hosting must be 'supabase' or 'vercel'";
-  }
-  if (stack.database_provider === "local") {
-    return "Local database providers are not hostable in MVP";
-  }
-  if (stack.database === "sqlite") {
-    return "SQLite is not supported for hosted MVP deployments";
-  }
-  if (
-    (stack.database_provider === "supabase" || stack.database_provider === "neon") &&
-    stack.database !== "postgresql"
-  ) {
-    return `${stack.database_provider} provider requires postgresql`;
-  }
-  if (stack.database_provider === "planetscale" && stack.database !== "mysql") {
-    return "planetscale provider requires mysql";
-  }
-  if (stack.hosting_backend === "supabase" && stack.database_provider !== "supabase") {
-    return "Supabase backend hosting requires supabase database provider";
+  const mismatches = Object.entries(DEFAULT_STACK).filter(
+    ([key, expected]) => stack[key as keyof StackJson] !== expected
+  );
+  if (mismatches.length > 0) {
+    return "Stack profile is fixed to Next.js full-stack on Vercel";
   }
   return null;
 }
+

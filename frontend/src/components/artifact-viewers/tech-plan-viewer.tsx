@@ -97,7 +97,7 @@ export function TechPlanViewer({ artifact }: { artifact: ProjectArtifact }) {
   const hasStructuredContent = folderTree || apiRoutes.length > 0 || components.length > 0 || hasObjectHierarchy;
 
   return (
-    <div className="space-y-2 animate-fade-in">
+    <div className="space-y-2 animate-fade-in min-w-0">
       {folderTree && (
         <Section title="Folder Structure">
           <div className="glass-raised p-4 overflow-x-auto">
@@ -108,7 +108,9 @@ export function TechPlanViewer({ artifact }: { artifact: ProjectArtifact }) {
 
       {dbSchema && (
         <Section title="Database Schema">
-          <pre className="text-xs">{typeof dbSchema === "string" ? dbSchema : JSON.stringify(dbSchema, null, 2)}</pre>
+          <pre className="text-xs overflow-auto max-w-full whitespace-pre-wrap break-words">
+            {typeof dbSchema === "string" ? dbSchema : JSON.stringify(dbSchema, null, 2)}
+          </pre>
         </Section>
       )}
 
@@ -153,7 +155,9 @@ export function TechPlanViewer({ artifact }: { artifact: ProjectArtifact }) {
 
       {hasObjectHierarchy && (
         <Section title="Component Hierarchy">
-          <pre className="text-xs">{JSON.stringify(componentHierarchy, null, 2)}</pre>
+          <pre className="text-xs overflow-auto max-w-full whitespace-pre-wrap break-words">
+            {JSON.stringify(componentHierarchy, null, 2)}
+          </pre>
         </Section>
       )}
 
@@ -175,7 +179,9 @@ export function TechPlanViewer({ artifact }: { artifact: ProjectArtifact }) {
 
       {deployConfig && (
         <Section title="Deployment Config">
-          <pre className="text-xs">{JSON.stringify(deployConfig, null, 2)}</pre>
+          <pre className="text-xs overflow-auto max-w-full whitespace-pre-wrap break-words">
+            {JSON.stringify(deployConfig, null, 2)}
+          </pre>
         </Section>
       )}
 

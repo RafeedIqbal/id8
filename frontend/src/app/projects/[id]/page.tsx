@@ -11,19 +11,18 @@ import { EmptyState } from "@/components/empty-state";
 import { DeleteProjectModal } from "@/components/delete-project-modal";
 import { ProjectSettingsPanel } from "@/components/project-settings-panel";
 import { NODE_LABELS } from "@/lib/constants";
-import { resolveResumeNode } from "@/lib/run-failure";
-import { formatDateTime, truncate } from "@/lib/utils";
+import { inferFailureNode, resolveResumeNode } from "@/lib/run-failure";
+import { formatDateTime } from "@/lib/utils";
 import type { ArtifactType, ApprovalStage, ProjectStatus } from "@/types/domain";
 
 const ACTIVE_STATUSES: ProjectStatus[] = [
-  "prd_draft", "design_draft", "tech_plan_draft", "codegen",
+  "prd_draft", "design_draft", "codegen",
   "security_gate", "deploying",
 ];
 
 const WAITING_STAGES: Record<string, ApprovalStage> = {
   WaitPRDApproval: "prd",
   WaitDesignApproval: "design",
-  WaitTechPlanApproval: "tech_plan",
   WaitDeployApproval: "deploy",
 };
 
@@ -126,12 +125,19 @@ export default function ProjectDetailPage({
   // Determine if we're at a waiting node (approval gate)
   const currentNode = runDetail?.currentNode;
   const waitingStage = currentNode ? WAITING_STAGES[currentNode] : undefined;
+  const failedNode = inferFailureNode(
+    runDetail?.currentNode,
+    runDetail?.timeline,
+    project?.status === "failed"
+  );
   const resumeNode = resolveResumeNode(
     runDetail?.currentNode,
     runDetail?.timeline,
     project?.status === "failed"
   );
   const resumeLabel = resumeNode ? (NODE_LABELS[resumeNode] ?? resumeNode) : "Failed Step";
+  const resumeReplayMode: "retry_failed" | "replay_from_node" =
+    failedNode && resumeNode === failedNode ? "retry_failed" : "replay_from_node";
   const stitchAuthError =
     runDetail?.lastErrorMessage?.toLowerCase().includes("stitch") ||
     runDetail?.lastErrorMessage?.toLowerCase().includes("credentials");
@@ -159,7 +165,7 @@ export default function ProjectDetailPage({
       <Breadcrumbs
         items={[
           { label: "Projects", href: "/" },
-          { label: project.id },
+          { label: project.title || project.id },
         ]}
       />
 
@@ -168,7 +174,7 @@ export default function ProjectDetailPage({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
             <h1 className="text-xl font-semibold text-text-0 truncate">
-              {truncate(project.initialPrompt, 80)}
+              {project.title}
             </h1>
             <ProjectStatusBadge status={project.status} />
           </div>
@@ -256,7 +262,7 @@ export default function ProjectDetailPage({
               )}
               {project.status === "failed" && (
                 <button
-                  onClick={() => createRun.mutate({ resumeFromNode: resumeNode, replayMode: "retry_failed" })}
+                  onClick={() => createRun.mutate({ resumeFromNode: resumeNode, replayMode: resumeReplayMode })}
                   disabled={createRun.isPending}
                   className="btn btn-primary w-full"
                 >
@@ -419,6 +425,14 @@ export default function ProjectDetailPage({
               Project Details
             </h2>
             <div className="space-y-3">
+              <div>
+                <div className="text-[10px] font-mono-display text-text-3 tracking-widest uppercase mb-1">
+                  Title
+                </div>
+                <p className="text-sm text-text-1 leading-relaxed">
+                  {project.title}
+                </p>
+              </div>
               <div>
                 <div className="text-[10px] font-mono-display text-text-3 tracking-widest uppercase mb-1">
                   Initial Prompt

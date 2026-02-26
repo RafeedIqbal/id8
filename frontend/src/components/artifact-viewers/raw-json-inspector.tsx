@@ -80,13 +80,13 @@ export function RawJsonInspector({
   warning?: string;
 }) {
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in min-w-0">
       {warning && (
         <div className="mb-4 px-4 py-3 rounded-lg bg-warning-bg border border-warning-dim text-warning text-xs font-mono-display">
           {warning}
         </div>
       )}
-      <div className="glass p-4 overflow-auto max-h-[600px] text-xs font-mono-display leading-relaxed">
+      <div className="glass p-4 overflow-auto max-h-[600px] max-w-full text-xs font-mono-display leading-relaxed break-words">
         <JsonNode data={data} />
       </div>
     </div>

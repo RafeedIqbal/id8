@@ -72,12 +72,19 @@ async def _ensure_scaffold_owner(db: AsyncSession) -> uuid.UUID:
 @router.post("/projects", operation_id="createProject", response_model=ProjectResponse, status_code=201)
 async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(get_db)) -> Project:
     owner_user_id = await _ensure_scaffold_owner(db)
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title cannot be empty")
+    initial_prompt = body.initial_prompt.strip()
+    if not initial_prompt:
+        raise HTTPException(status_code=422, detail="initial_prompt cannot be empty")
 
     # Default stack_json if not provided
     stack_data = (body.stack_json or DEFAULT_STACK).model_dump()
 
     project = Project(
-        initial_prompt=body.initial_prompt,
+        title=title,
+        initial_prompt=initial_prompt,
         owner_user_id=owner_user_id,
         stack_json=stack_data,
     )
@@ -215,6 +222,12 @@ async def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     changes: dict[str, object] = {}
+    if body.title is not None:
+        if not body.title.strip():
+            raise HTTPException(status_code=422, detail="title cannot be empty")
+        project.title = body.title.strip()
+        changes["title"] = project.title
+
     if body.initial_prompt is not None:
         if not body.initial_prompt.strip():
             raise HTTPException(status_code=422, detail="initial_prompt cannot be empty")

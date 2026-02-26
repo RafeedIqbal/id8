@@ -31,6 +31,7 @@ export type ArtifactType =
 export interface Project {
   id: string;
   ownerUserId: string;
+  title: string;
   initialPrompt: string;
   status: ProjectStatus;
   githubRepoUrl?: string;

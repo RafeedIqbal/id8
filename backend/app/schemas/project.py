@@ -11,12 +11,14 @@ from app.schemas.stack import StackJson
 
 
 class CreateProjectRequest(BaseModel):
+    title: str
     initial_prompt: str
     constraints: dict[str, Any] | None = None
     stack_json: StackJson | None = None
 
 
 class UpdateProjectRequest(BaseModel):
+    title: str | None = None
     initial_prompt: str | None = None
     stack_json: StackJson | None = None
 
@@ -33,6 +35,7 @@ class ProjectRunSummary(BaseModel):
 class Project(BaseModel):
     id: uuid.UUID
     owner_user_id: uuid.UUID
+    title: str
     initial_prompt: str
     status: ProjectStatus
     github_repo_url: str | None = None

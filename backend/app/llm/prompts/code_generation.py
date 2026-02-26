@@ -5,31 +5,29 @@ import json
 from typing import Any
 
 _SYSTEM_PROMPT_FULL = """\
-You are an expert full-stack software engineer. Given approved artifacts, generate
-production-quality project code.
+You are an expert full-stack software engineer. Generate production-quality code.
+
+Runtime profile is fixed:
+- Framework: Next.js full-stack (App Router)
+- Hosting: Vercel
+- Database: none required by default
 
 Rules:
-1. Follow the technology stack and architecture from the tech plan exactly.
-2. Produce complete, runnable files; no placeholders.
-3. Include dependency manifests and runtime configuration.
-4. Every local import must resolve to another file in the set.
-5. Never include secrets. Use environment variables.
-6. Ensure deploy-baseline artifacts exist:
-   - Vercel/frontend: package manifest plus runtime entry file.
-   - Vercel/Python functions: function files must live under `api/` (for example `api/index.py`).
-     Never configure `vercel.json.functions` to point to `backend/...`.
-     If backend app code is in `backend/app/main.py`, add an `api/index.py` wrapper that imports `app`.
-   - Supabase: SQL migrations when schema requires DB changes.
-   - Environment template: `.env.example` placeholders only.
+1. Produce a complete, runnable Next.js project that deploys on Vercel without manual edits.
+2. Include dependency manifests and runtime configuration.
+3. Every local import must resolve to another file in the set.
+4. Never include secrets. Use environment variables and `.env.example`.
+5. If `vercel.json` is present, all function patterns must be under `api/`.
+6. Prefer Next.js route handlers / server actions over external backend runtimes.
 
 You MUST return a single valid JSON object:
 {
   "files": [
-    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"}
+    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "typescript"}
   ],
   "build_command": "npm run build",
   "test_command": "npm test",
-  "entry_point": "backend/app/main.py"
+  "entry_point": "src/app/page.tsx"
 }
 
 Return ONLY JSON.
@@ -38,25 +36,27 @@ Return ONLY JSON.
 _SYSTEM_PROMPT_CHUNK = """\
 You are an expert full-stack software engineer. Generate ONE phased chunk of files.
 
+Runtime profile is fixed:
+- Framework: Next.js full-stack (App Router)
+- Hosting: Vercel
+
 Rules:
 1. Output only files for the requested phase.
 2. Use complete, production-ready content.
-3. Do not include secrets; use env vars.
+3. Do not include secrets; use env vars and `.env.example`.
 4. Keep imports consistent with already-generated files and file inventory.
 5. Return only valid JSON with this shape:
 {
   "files": [
-    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"}
+    {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "typescript"}
   ]
 }
 6. Every relative JS/TS import must resolve to a generated file path.
-7. Use stable paths under `frontend/`, `backend/`, `db/` or `supabase/`.
-8. Ensure deploy-baseline artifacts exist across phases:
-   - Vercel/frontend: `package.json` (root or frontend) plus at least one frontend runtime entry file.
-   - Vercel/Python functions: place serverless entry files under `api/` only (for example `api/index.py`);
-     do not use `backend/...` in `vercel.json.functions` keys.
-   - Supabase: SQL migrations in `supabase/migrations/` or `db/migrations/` when schema requires DB changes.
-   - Environment template: `.env.example` with placeholders (never real secrets).
+7. Use stable paths under `src/`, `app/`, `components/`, `lib/`, `api/`, `public/`.
+8. Ensure Vercel deploy baseline exists across phases:
+   - `package.json` with Next.js build scripts.
+   - Next.js runtime entry files (`app/page.tsx` or `src/app/page.tsx`).
+   - Optional `vercel.json` uses only `api/...` function patterns.
 
 Return ONLY JSON.
 """
@@ -64,18 +64,16 @@ Return ONLY JSON.
 _USER_PROMPT_FULL = """\
 Generate the complete source code for the project based on the following artifacts.
 
-## Technical Plan
-{tech_plan_content}
-
 ## Design Specification
 {design_spec_content}
+
+## Design Visual Context (for fidelity)
+{design_visual_context}
 
 ## PRD Summary
 {prd_content}
 
-Generate ALL files needed for a working project: backend code, frontend code, \
-configuration files, database migrations, and dependency manifests.  Follow the \
-folder structure from the tech plan.
+Generate all files needed for a working Vercel-deployable Next.js full-stack project.
 """
 
 _USER_PROMPT_WITH_FEEDBACK_FULL = """\
@@ -83,11 +81,11 @@ Generate revised source code. A previous version was rejected by the security
 gate. Fix these security issues:
 {feedback}
 
-## Technical Plan
-{tech_plan_content}
-
 ## Design Specification
 {design_spec_content}
+
+## Design Visual Context (for fidelity)
+{design_visual_context}
 
 ## PRD Summary
 {prd_content}
@@ -104,11 +102,11 @@ Generate only the {chunk_label} files for this project.
 Chunk-specific requirements:
 {chunk_requirements}
 
-## Technical Plan
-{tech_plan_content}
-
 ## Design Specification
 {design_spec_content}
+
+## Design Visual Context (for fidelity)
+{design_visual_context}
 
 ## PRD Summary
 {prd_content}
@@ -125,25 +123,20 @@ Return only JSON with a `files` array for this phase.
 
 _CHUNK_REQUIREMENTS = {
     "backend": (
-        "Create backend API routes, domain models, and services using tech plan "
-        "`api_routes` and `database_schema`. If backend is required, include "
-        "`backend/app/main.py` as an executable entrypoint and ensure Python imports resolve."
+        "Implement server-side logic using Next.js route handlers under `app/api` or `src/app/api` "
+        "and reusable server utilities under `lib/`."
     ),
     "frontend": (
-        "Create frontend pages/components using tech plan `component_hierarchy` "
-        "and design `screens`. Ensure every relative import points to an emitted file "
-        "(hooks, store, api, pages, components)."
+        "Create Next.js pages/components from design screens. Keep UI structure, hierarchy, and naming "
+        "consistent with provided design context."
     ),
     "config": (
-        "Create configuration/manifests (requirements/package manifests, Docker, env examples, "
-        "framework config files) needed to build and run. Include deploy-ready config for "
-        "Vercel and env placeholders for Supabase public keys when applicable. "
-        "For Vercel Python runtimes, generate `api/index.py` (or `api/*.py`) entry files and ensure "
-        "`vercel.json.functions` keys target only `api/...` paths, never `backend/...`."
+        "Create project configuration/manifests needed for Vercel deploy: package.json scripts, "
+        "Next.js config, tsconfig, env example placeholders, and optional vercel.json."
     ),
     "migrations": (
-        "Create database migration files aligned with the defined schema. Prefer "
-        "`supabase/migrations/*.sql` (or `db/migrations/*.sql`) so deploy can apply them."
+        "If a durable data model is explicitly required, add lightweight SQL/schema files under `db/migrations/` "
+        "or `sql/`; otherwise return an empty files array for this phase."
     ),
 }
 
@@ -164,8 +157,10 @@ def _serialize_code_snapshot(artifact: Any) -> str:
     if not files:
         return "(no previous code)"
     parts = []
-    for f in files[:30]:  # Cap to avoid blowing up token budget
-        parts.append(f"### {f.get('path', '?')}\n```{f.get('language', '')}\n{f.get('content', '')}\n```")
+    for f in files[:30]:
+        parts.append(
+            f"### {f.get('path', '?')}\n```{f.get('language', '')}\n{f.get('content', '')}\n```"
+        )
     return "\n\n".join(parts)
 
 
@@ -208,6 +203,42 @@ def _serialize_generated_file_index(files: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines)
 
 
+def _serialize_design_codegen_context(design_spec: Any) -> str:
+    """Serialize normalized design visual context with bounded payload size."""
+    if not isinstance(design_spec, dict):
+        return "(none)"
+
+    context = (
+        design_spec.get("design_codegen_context")
+        or design_spec.get("metadata", {}).get("design_codegen_context")
+    )
+    if not isinstance(context, dict):
+        return "(none)"
+
+    screens = context.get("screens")
+    if isinstance(screens, list):
+        capped_screens = []
+        for raw_screen in screens[:8]:
+            if not isinstance(raw_screen, dict):
+                continue
+            screen = {
+                "id": raw_screen.get("id"),
+                "name": raw_screen.get("name"),
+                "description": raw_screen.get("description"),
+                "preview_images": (raw_screen.get("preview_images") or [])[:4],
+                "assets": (raw_screen.get("assets") or [])[:6],
+                "component_regions": (raw_screen.get("component_regions") or [])[:12],
+            }
+            capped_screens.append(screen)
+        context = {**context, "screens": capped_screens}
+
+    text = json.dumps(context, indent=2)
+    max_chars = 14_000
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...truncated..."
+    return text
+
+
 def build_prompts(
     *,
     previous_artifacts: dict[str, Any] | None = None,
@@ -215,39 +246,26 @@ def build_prompts(
     chunk: str = "full_snapshot",
     generated_files: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    """Return ``(system_prompt, user_prompt)`` for code generation.
-
-    Parameters
-    ----------
-    previous_artifacts:
-        Should contain ``"tech_plan"`` and optionally ``"design_spec"`` and ``"prd"``.
-    feedback:
-        Optional security-gate findings from a previous code review.
-    chunk:
-        Generation scope. Use one of ``backend``, ``frontend``, ``config``,
-        ``migrations`` for phased generation; default ``full_snapshot``.
-    generated_files:
-        Files already generated in previous phases for context.
-    """
+    """Return ``(system_prompt, user_prompt)`` for code generation."""
     arts = previous_artifacts or {}
-    tech_plan = _serialize(arts.get("tech_plan"))
     design_spec = _serialize(arts.get("design_spec"))
+    design_visual_context = _serialize_design_codegen_context(arts.get("design_spec"))
     prd = _serialize(arts.get("prd"))
 
     if chunk == "full_snapshot":
         if feedback:
             previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
             user_prompt = _USER_PROMPT_WITH_FEEDBACK_FULL.format(
-                tech_plan_content=tech_plan,
                 design_spec_content=design_spec,
+                design_visual_context=design_visual_context,
                 prd_content=prd,
                 feedback=feedback,
                 previous_code=previous_code,
             )
         else:
             user_prompt = _USER_PROMPT_FULL.format(
-                tech_plan_content=tech_plan,
                 design_spec_content=design_spec,
+                design_visual_context=design_visual_context,
                 prd_content=prd,
             )
         return _SYSTEM_PROMPT_FULL, user_prompt
@@ -256,15 +274,17 @@ def build_prompts(
     security_feedback_block = ""
     previous_code_block = ""
     if feedback:
-        security_feedback_block = f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
+        security_feedback_block = (
+            f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
+        )
         previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
         previous_code_block = f"\n## Previous Code Snapshot\n{previous_code}\n"
 
     user_prompt = _USER_PROMPT_CHUNK.format(
         chunk_label=chunk,
         chunk_requirements=chunk_requirements,
-        tech_plan_content=tech_plan,
         design_spec_content=design_spec,
+        design_visual_context=design_visual_context,
         prd_content=prd,
         generated_files=_serialize_generated_files(generated_files),
         generated_file_index=_serialize_generated_file_index(generated_files),
@@ -302,3 +322,4 @@ def build_chunk_prompts(
         chunk=chunk,
         generated_files=generated_files,
     )
+

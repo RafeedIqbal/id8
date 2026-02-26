@@ -1,24 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCreateProject } from "@/lib/hooks";
 import { Breadcrumbs } from "@/components/breadcrumbs";
-import { DEFAULT_STACK, STACK_OPTIONS, validateStackHostability } from "@/types/stack";
-import type { StackJson } from "@/types/stack";
+import { DEFAULT_STACK, FIXED_STACK_LABELS } from "@/types/stack";
 
 export default function NewProjectPage() {
+  const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [constraints, setConstraints] = useState("");
   const [constraintsError, setConstraintsError] = useState("");
-  const [stack, setStack] = useState<StackJson>({ ...DEFAULT_STACK });
-  const [hostError, setHostError] = useState<string | null>(null);
+  const stack = DEFAULT_STACK;
   const create = useCreateProject();
   const router = useRouter();
-
-  useEffect(() => {
-    setHostError(validateStackHostability(stack));
-  }, [stack]);
 
   function parseConstraints(): Record<string, unknown> | undefined {
     if (!constraints.trim()) return undefined;
@@ -32,21 +27,17 @@ export default function NewProjectPage() {
     }
   }
 
-  function updateStack<K extends keyof StackJson>(key: K, value: StackJson[K]) {
-    setStack((prev) => ({ ...prev, [key]: value }));
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim() || hostError) return;
+    if (!title.trim() || !prompt.trim()) return;
 
     const parsedConstraints = constraints.trim() ? parseConstraints() : undefined;
     if (constraints.trim() && !parsedConstraints) return;
 
     const project = await create.mutateAsync({
+      title: title.trim(),
       prompt: prompt.trim(),
       constraints: parsedConstraints,
-      stackJson: stack,
     });
     router.push(`/projects/${project.id}`);
   }
@@ -62,6 +53,21 @@ export default function NewProjectPage() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Title */}
+          <div>
+            <label className="block text-sm font-medium text-text-1 mb-2">
+              Project Title
+            </label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Team Task Board"
+              className="w-full"
+              required
+            />
+          </div>
+
           {/* Prompt */}
           <div>
             <label className="block text-sm font-medium text-text-1 mb-2">
@@ -85,32 +91,23 @@ export default function NewProjectPage() {
           {/* Stack Configuration */}
           <div>
             <label className="block text-sm font-medium text-text-1 mb-2">
-              Stack Configuration
+              Runtime Profile
             </label>
             <div className="grid grid-cols-2 gap-3">
-              {(Object.keys(STACK_OPTIONS) as Array<keyof typeof STACK_OPTIONS>).map((key) => (
+              {FIXED_STACK_LABELS.map(({ key, label }) => (
                 <div key={key}>
                   <label className="block text-[10px] font-mono-display text-text-3 tracking-widest uppercase mb-1">
-                    {key.replace(/_/g, " ")}
+                    {label}
                   </label>
-                  <select
-                    value={stack[key]}
-                    onChange={(e) => updateStack(key, e.target.value as never)}
-                    className="w-full text-xs"
-                    disabled={key === "hosting_frontend"}
-                  >
-                    {STACK_OPTIONS[key].map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="w-full text-xs bg-surface-2 border border-border-1 rounded-lg px-3 py-2">
+                    {stack[key]}
+                  </div>
                 </div>
               ))}
             </div>
-            {hostError && (
-              <p className="text-xs text-error mt-2">{hostError}</p>
-            )}
+            <p className="text-xs text-text-3 mt-2">
+              Stack selection is locked to ensure zero-config Vercel deployments.
+            </p>
           </div>
 
           {/* Constraints */}
@@ -126,7 +123,7 @@ export default function NewProjectPage() {
                 setConstraintsError("");
               }}
               rows={4}
-              placeholder='{"auth": "supabase", "styling": "tailwind"}'
+              placeholder='{"styling": "clean and minimal", "tone": "professional"}'
               className="resize-y font-mono-display text-xs"
             />
             {constraintsError && (
@@ -145,7 +142,7 @@ export default function NewProjectPage() {
           <div className="flex items-center gap-4 pt-2">
             <button
               type="submit"
-              disabled={!prompt.trim() || create.isPending || !!hostError}
+              disabled={!title.trim() || !prompt.trim() || create.isPending}
               className="btn btn-primary"
             >
               {create.isPending ? (
