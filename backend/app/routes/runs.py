@@ -17,6 +17,7 @@ from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
+from app.observability import emit_audit_event
 from app.orchestrator import ALL_NODE_NAMES, NODE_TO_PROJECT_STATUS, NodeName, run_orchestrator
 from app.orchestrator.handlers.stubs import artifact_type_for_node
 from app.schemas.run import (
@@ -101,13 +102,13 @@ async def _record_run_event(
     if outcome:
         payload["outcome"] = outcome
 
-    event = AuditEvent(
-        project_id=project_id,
-        actor_user_id=None,
-        event_type=event_type,
-        event_payload=payload,
+    await emit_audit_event(
+        project_id,
+        None,
+        event_type,
+        payload,
+        db,
     )
-    db.add(event)
 
 
 async def _load_timeline_events(
@@ -280,6 +281,15 @@ async def create_run(
             db=db,
             project_id=project_id,
             run_id=previous_run.id,
+            event_type="run.started",
+            from_node=from_node,
+            to_node=resume_node,
+            outcome="resumed",
+        )
+        await _record_run_event(
+            db=db,
+            project_id=project_id,
+            run_id=previous_run.id,
             event_type="orchestrator.run_resumed",
             from_node=from_node,
             to_node=resume_node,
@@ -318,6 +328,14 @@ async def create_run(
     db.add(run)
     try:
         await db.flush()
+        await _record_run_event(
+            db=db,
+            project_id=project_id,
+            run_id=run.id,
+            event_type="run.started",
+            to_node=start_node,
+            outcome="started",
+        )
         await _record_run_event(
             db=db,
             project_id=project_id,

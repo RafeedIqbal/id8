@@ -11,6 +11,7 @@ Checkpointing is built-in: every transition writes ``current_node`` and
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -18,11 +19,17 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.audit_event import AuditEvent
 from app.models.enums import ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
+from app.observability import (
+    NODE_P95_TARGET_MS,
+    PIPELINE_P95_TARGET_MS,
+    categorize_failure_reason,
+    emit_audit_event,
+)
+from app.observability.costs import estimate_llm_cost_usd
 from app.orchestrator.base import NodeResult, RunContext
 from app.orchestrator.handlers.registry import HANDLER_REGISTRY
 from app.orchestrator.handlers.stubs import artifact_type_for_node
@@ -83,6 +90,20 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         existing_artifact = await _check_existing_artifact(run_id, node_name, db)
         if meta.is_idempotent and existing_artifact is not None:
             logger.info("Artifact exists for run=%s node=%s — skipping", run_id, node_name)
+            await emit_audit_event(
+                run.project_id,
+                None,
+                "run.node_completed",
+                {
+                    "run_id": str(run.id),
+                    "node": node_name,
+                    "attempt": run.retry_count + 1,
+                    "duration_ms": 0.0,
+                    "outcome": "skipped",
+                    "skipped": True,
+                },
+                db,
+            )
             # Resolve next node using a "success"/"passed" outcome
             outcome = _default_outcome_for_skip(node_name)
             try:
@@ -106,9 +127,23 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             workflow_payload=dict(workflow_payload),
         )
 
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.node_entered",
+            {
+                "run_id": str(run.id),
+                "node": node_name,
+                "attempt": run.retry_count + 1,
+            },
+            db,
+        )
+        node_start = time.monotonic()
         try:
             node_result: NodeResult = await handler.execute(ctx)
         except RetryableError as exc:
+            duration_ms = round((time.monotonic() - node_start) * 1000, 2)
+            _warn_if_node_exceeds_slo(node_name, duration_ms, run_id)
             logger.warning("Retryable error in node=%s run=%s: %s", node_name, run_id, exc)
             await _handle_retryable_error(
                 run,
@@ -117,15 +152,51 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
                 db,
                 use_fallback_profile=isinstance(exc, RateLimitError),
                 minimum_delay_seconds=getattr(exc, "retry_after_seconds", None),
+                node_duration_ms=duration_ms,
             )
             return
         except Exception as exc:
+            duration_ms = round((time.monotonic() - node_start) * 1000, 2)
+            _warn_if_node_exceeds_slo(node_name, duration_ms, run_id)
+            await emit_audit_event(
+                run.project_id,
+                None,
+                "run.node_completed",
+                {
+                    "run_id": str(run.id),
+                    "node": node_name,
+                    "attempt": run.retry_count + 1,
+                    "duration_ms": duration_ms,
+                    "outcome": "failure",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "failure_reason": categorize_failure_reason(
+                        error_message=f"{type(exc).__name__}: {exc}",
+                    ),
+                },
+                db,
+            )
             logger.exception("Unhandled error in node=%s run=%s", node_name, run_id)
             await _transition_to_failed(run, f"{type(exc).__name__}: {exc}", db)
             return
 
+        duration_ms = round((time.monotonic() - node_start) * 1000, 2)
+        _warn_if_node_exceeds_slo(node_name, duration_ms, run_id)
+
         # ---- Wait node: park if still waiting -----------------------------
         if meta.is_wait_node and node_result.outcome == "waiting":
+            await emit_audit_event(
+                run.project_id,
+                None,
+                "run.node_completed",
+                {
+                    "run_id": str(run.id),
+                    "node": node_name,
+                    "attempt": run.retry_count + 1,
+                    "duration_ms": duration_ms,
+                    "outcome": "waiting",
+                },
+                db,
+            )
             logger.info("Run %s parked at wait node %s", run_id, node_name)
             await _update_project_status(run.project_id, node_name, db)
             return
@@ -147,9 +218,46 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         try:
             next_node = resolve_next_node(node_name, node_result.outcome)
         except Exception as exc:
+            await emit_audit_event(
+                run.project_id,
+                None,
+                "run.node_completed",
+                {
+                    "run_id": str(run.id),
+                    "node": node_name,
+                    "attempt": run.retry_count + 1,
+                    "duration_ms": duration_ms,
+                    "outcome": "failure",
+                    "error": str(exc),
+                    "failure_reason": categorize_failure_reason(error_message=str(exc)),
+                },
+                db,
+            )
             logger.error("Invalid transition node=%s outcome=%s: %s", node_name, node_result.outcome, exc)
             await _transition_to_failed(run, str(exc), db)
             return
+
+        completed_payload: dict[str, Any] = {
+            "run_id": str(run.id),
+            "node": node_name,
+            "attempt": run.retry_count + 1,
+            "duration_ms": duration_ms,
+            "outcome": node_result.outcome,
+            "next_node": str(next_node),
+        }
+        if node_result.error:
+            completed_payload["error"] = node_result.error
+            completed_payload["failure_reason"] = categorize_failure_reason(error_message=node_result.error)
+        elif node_result.outcome in {"failure", "failed"}:
+            completed_payload["failure_reason"] = categorize_failure_reason(error_message=None)
+
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.node_completed",
+            completed_payload,
+            db,
+        )
 
         # Reset retry count on successful transition
         run.retry_count = 0
@@ -205,10 +313,63 @@ async def _advance(
 
 async def _handle_terminal(run: ProjectRun, node_name: str, db: AsyncSession) -> None:
     """Mark a run at a terminal node as complete."""
+    finished_at = datetime.now(tz=UTC)
     terminal_status = NODE_TO_PROJECT_STATUS.get(NodeName(node_name), ProjectStatus.FAILED)
     run.status = terminal_status
-    run.updated_at = datetime.now(tz=UTC)
+    run.updated_at = finished_at
     await _update_project_status(run.project_id, node_name, db)
+
+    total_duration_ms = round((finished_at - run.created_at).total_seconds() * 1000, 2)
+    if node_name == NodeName.END_SUCCESS:
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.completed",
+            {
+                "run_id": str(run.id),
+                "node": node_name,
+                "total_duration_ms": total_duration_ms,
+                "status": str(terminal_status),
+            },
+            db,
+        )
+        if total_duration_ms > PIPELINE_P95_TARGET_MS:
+            logger.warning(
+                "SLO warning run=%s end_to_end_duration_ms=%.2f exceeds p95 target %.2f",
+                run.id,
+                total_duration_ms,
+                PIPELINE_P95_TARGET_MS,
+            )
+    elif node_name == NodeName.END_FAILED:
+        failure_reason = categorize_failure_reason(
+            error_message=run.last_error_message,
+            error_code=run.last_error_code,
+        )
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.failed",
+            {
+                "run_id": str(run.id),
+                "from_node": node_name,
+                "to_node": str(NodeName.END_FAILED),
+                "error": run.last_error_message or "Run reached EndFailed",
+                "failure_reason": failure_reason,
+                "retry_count": run.retry_count,
+                "total_duration_ms": total_duration_ms,
+            },
+            db,
+        )
+        await _record_run_event(
+            db=db,
+            project_id=run.project_id,
+            run_id=run.id,
+            event_type="orchestrator.run_failed",
+            from_node=node_name,
+            to_node=NodeName.END_FAILED,
+            outcome="failure",
+            error=run.last_error_message,
+        )
     await db.flush()
     logger.info("Run %s reached terminal node=%s status=%s", run.id, node_name, terminal_status)
 
@@ -218,9 +379,11 @@ async def _transition_to_failed(run: ProjectRun, error_message: str, db: AsyncSe
     from_node = run.current_node
     run.current_node = NodeName.END_FAILED
     run.status = ProjectStatus.FAILED
-    run.last_error_code = "ORCHESTRATOR_ERROR"
+    if not run.last_error_code:
+        run.last_error_code = "ORCHESTRATOR_ERROR"
     run.last_error_message = error_message
-    run.updated_at = datetime.now(tz=UTC)
+    now = datetime.now(tz=UTC)
+    run.updated_at = now
     await _update_project_status(run.project_id, NodeName.END_FAILED, db)
     await _record_run_event(
         db=db,
@@ -231,6 +394,24 @@ async def _transition_to_failed(run: ProjectRun, error_message: str, db: AsyncSe
         to_node=NodeName.END_FAILED,
         outcome="failure",
         error=error_message,
+    )
+    await emit_audit_event(
+        run.project_id,
+        None,
+        "run.failed",
+        {
+            "run_id": str(run.id),
+            "from_node": str(from_node),
+            "to_node": str(NodeName.END_FAILED),
+            "error": error_message,
+            "failure_reason": categorize_failure_reason(
+                error_message=error_message,
+                error_code=run.last_error_code,
+            ),
+            "retry_count": run.retry_count,
+            "total_duration_ms": round((now - run.created_at).total_seconds() * 1000, 2),
+        },
+        db,
     )
     await db.flush()
     logger.error("Run %s failed: %s", run.id, error_message)
@@ -244,6 +425,7 @@ async def _handle_retryable_error(
     *,
     use_fallback_profile: bool,
     minimum_delay_seconds: float | None,
+    node_duration_ms: float,
 ) -> None:
     """Increment retry count and schedule a retry job, or fail if exhausted."""
     run.retry_count += 1
@@ -265,6 +447,45 @@ async def _handle_retryable_error(
         # Retries exhausted
         await _transition_to_failed(run, f"Retry exhausted after {run.retry_count - 1} retries: {error_message}", db)
     else:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        retry_delay_ms = round(float(payload.get("delay_seconds", 0.0)) * 1000, 2)
+        if retry_delay_ms <= 0:
+            retry_delay_ms = round(max((job.scheduled_for - run.updated_at).total_seconds() * 1000, 0.0), 2)
+        failure_reason = categorize_failure_reason(
+            error_message=error_message,
+            error_code=run.last_error_code,
+        )
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.retry_scheduled",
+            {
+                "run_id": str(run.id),
+                "node": node_name,
+                "retry_attempt": run.retry_count,
+                "retry_delay_ms": retry_delay_ms,
+                "failure_reason": failure_reason,
+                "error": error_message,
+            },
+            db,
+        )
+        await emit_audit_event(
+            run.project_id,
+            None,
+            "run.node_completed",
+            {
+                "run_id": str(run.id),
+                "node": node_name,
+                "attempt": run.retry_count,
+                "duration_ms": node_duration_ms,
+                "outcome": "retry_scheduled",
+                "retry_attempt": run.retry_count,
+                "retry_delay_ms": retry_delay_ms,
+                "error": error_message,
+                "failure_reason": failure_reason,
+            },
+            db,
+        )
         await db.flush()
 
 
@@ -336,12 +557,18 @@ async def _persist_artifact(
     model_profile: ModelProfile | None = None
     if llm_response is not None:
         model_profile = llm_response.profile_used
+        estimated_cost_usd = estimate_llm_cost_usd(
+            model_id=llm_response.model_id,
+            prompt_tokens=llm_response.token_usage.prompt_tokens,
+            completion_tokens=llm_response.token_usage.completion_tokens,
+        )
         content["__llm_metadata"] = {
             "model_id": llm_response.model_id,
             "model_profile": str(llm_response.profile_used),
             "prompt_tokens": llm_response.token_usage.prompt_tokens,
             "completion_tokens": llm_response.token_usage.completion_tokens,
             "latency_ms": llm_response.latency_ms,
+            "estimated_cost_usd": estimated_cost_usd,
         }
 
     artifact = ProjectArtifact(
@@ -382,7 +609,7 @@ async def _load_previous_artifacts(
 def _default_outcome_for_skip(node_name: str) -> str:
     """Return the default 'success' outcome key for a node when skipping."""
     # SecurityGate and DeployProduction use "passed" instead of "success"
-    if node_name in (NodeName.SECURITY_GATE, NodeName.DEPLOY_PRODUCTION):
+    if node_name in (str(NodeName.SECURITY_GATE), str(NodeName.DEPLOY_PRODUCTION)):
         return "passed"
     return "success"
 
@@ -409,11 +636,25 @@ async def _record_run_event(
     if error:
         payload["error"] = error
 
-    db.add(
-        AuditEvent(
-            project_id=project_id,
-            actor_user_id=None,
-            event_type=event_type,
-            event_payload=payload,
-        )
+    await emit_audit_event(
+        project_id,
+        None,
+        event_type,
+        payload,
+        db,
+    )
+
+
+def _warn_if_node_exceeds_slo(node_name: str, duration_ms: float, run_id: uuid.UUID) -> None:
+    target_ms = NODE_P95_TARGET_MS.get(node_name)
+    if target_ms is None:
+        return
+    if duration_ms <= target_ms:
+        return
+    logger.warning(
+        "SLO warning run=%s node=%s duration_ms=%.2f exceeds p95 target %.2f",
+        run_id,
+        node_name,
+        duration_ms,
+        target_ms,
     )

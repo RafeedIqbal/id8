@@ -127,6 +127,7 @@ export interface ApprovalRequest {
   stage: ApprovalStage;
   decision: "approved" | "rejected";
   notes?: string;
+  stitchAuth?: StitchAuthPayload;
 }
 
 export interface LlmRoutingPolicy {

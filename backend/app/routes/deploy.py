@@ -11,11 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import async_session, get_db
 from app.dependencies.idempotency import get_idempotency_key
 from app.models.approval_event import ApprovalEvent
-from app.models.audit_event import AuditEvent
 from app.models.deployment_record import DeploymentRecord
 from app.models.enums import ApprovalStage, ProjectStatus
 from app.models.project import Project
 from app.models.project_run import ProjectRun
+from app.observability import emit_audit_event
 from app.orchestrator import NodeName, run_orchestrator
 from app.schemas.deploy import DeploymentRecordResponse, DeployRequest
 
@@ -125,18 +125,17 @@ async def deploy_project(
     previous_node = run.current_node
     run.current_node = NodeName.WAIT_DEPLOY_APPROVAL
     run.status = ProjectStatus.DEPLOY_READY
-    db.add(
-        AuditEvent(
-            project_id=project_id,
-            actor_user_id=None,
-            event_type="orchestrator.run_requeued",
-            event_payload={
-                "run_id": str(run.id),
-                "from_node": str(previous_node),
-                "to_node": str(NodeName.WAIT_DEPLOY_APPROVAL),
-                "outcome": "requeued_for_deploy",
-            },
-        )
+    await emit_audit_event(
+        project_id,
+        None,
+        "orchestrator.run_requeued",
+        {
+            "run_id": str(run.id),
+            "from_node": str(previous_node),
+            "to_node": str(NodeName.WAIT_DEPLOY_APPROVAL),
+            "outcome": "requeued_for_deploy",
+        },
+        db,
     )
 
     # 7. Transition project to deploying and persist before triggering background work.

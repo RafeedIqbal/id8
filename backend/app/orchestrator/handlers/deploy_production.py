@@ -37,10 +37,10 @@ from app.github.client import _parse_owner_repo
 from app.models.approval_event import ApprovalEvent
 from app.models.audit_event import AuditEvent
 from app.models.deployment_record import DeploymentRecord
-from app.models.enums import ArtifactType, ApprovalStage
+from app.models.enums import ApprovalStage, ArtifactType
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
-from app.models.project_run import ProjectRun
+from app.observability import emit_audit_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.deploy_production")
@@ -54,9 +54,25 @@ class DeployProductionHandler(NodeHandler):
     """Run the full Supabase + Vercel deployment pipeline."""
 
     async def execute(self, ctx: RunContext) -> NodeResult:
+        await emit_audit_event(
+            ctx.project_id,
+            None,
+            "deploy.started",
+            {
+                "run_id": str(ctx.run_id),
+                "node": ctx.current_node,
+                "environment": "production",
+            },
+            ctx.db,
+        )
         # 1. Pre-check: deploy approval must exist.
         approval = await _load_deploy_approval(ctx)
         if approval is None:
+            await _emit_deploy_failed_event(
+                ctx,
+                error="Deploy approval event not found; DeployProduction cannot proceed",
+                stage="precheck",
+            )
             return NodeResult(
                 outcome="failure",
                 error="Deploy approval event not found; DeployProduction cannot proceed",
@@ -65,6 +81,11 @@ class DeployProductionHandler(NodeHandler):
         # 2. Load code snapshot.
         snapshot = await _load_code_snapshot(ctx)
         if snapshot is None:
+            await _emit_deploy_failed_event(
+                ctx,
+                error="No code_snapshot artifact found; DeployProduction cannot proceed",
+                stage="precheck",
+            )
             return NodeResult(
                 outcome="failure",
                 error="No code_snapshot artifact found; DeployProduction cannot proceed",
@@ -76,6 +97,11 @@ class DeployProductionHandler(NodeHandler):
         # 3. Load project for repo URL and existing deploy metadata.
         project = await _load_project(ctx)
         if project is None:
+            await _emit_deploy_failed_event(
+                ctx,
+                error=f"Project {ctx.project_id} not found",
+                stage="precheck",
+            )
             return NodeResult(
                 outcome="failure",
                 error=f"Project {ctx.project_id} not found",
@@ -229,6 +255,18 @@ class DeployProductionHandler(NodeHandler):
             "DeployProduction succeeded for run=%s url=%s",
             ctx.run_id,
             production_url,
+        )
+        await emit_audit_event(
+            ctx.project_id,
+            None,
+            "deploy.succeeded",
+            {
+                "run_id": str(ctx.run_id),
+                "environment": "production",
+                "deployment_url": production_url,
+                "duration_ms": round((end_time - start_time).total_seconds() * 1000, 2),
+            },
+            ctx.db,
         )
 
         artifact_data: dict[str, Any] = {
@@ -420,6 +458,11 @@ async def _fail_deployment(
     )
 
     logger.error("DeployProduction failed for run=%s: %s", ctx.run_id, error)
+    await _emit_deploy_failed_event(
+        ctx,
+        error=error,
+        stage=str(provider_payload.get("stage", "deploy")),
+    )
 
     return NodeResult(
         outcome="failure",
@@ -431,4 +474,24 @@ async def _fail_deployment(
             "rollback_candidate": rollback_candidate,
             "provider_payload": provider_payload,
         },
+    )
+
+
+async def _emit_deploy_failed_event(
+    ctx: RunContext,
+    *,
+    error: str,
+    stage: str,
+) -> None:
+    await emit_audit_event(
+        ctx.project_id,
+        None,
+        "deploy.failed",
+        {
+            "run_id": str(ctx.run_id),
+            "environment": "production",
+            "stage": stage,
+            "error": error,
+        },
+        ctx.db,
     )

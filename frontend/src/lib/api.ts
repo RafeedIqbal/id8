@@ -103,6 +103,70 @@ type DeploymentRecord = {
   url?: string;
 };
 
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+
+  constructor(status: number, message: string, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+type StitchAuthRequiredDetail = {
+  error_type?: string;
+  message?: string;
+  instructions?: string[];
+  fallback_note?: string;
+};
+
+function extractErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "detail", "error"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function asStitchAuthRequiredDetail(value: unknown): StitchAuthRequiredDetail | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const errorType = typeof record.error_type === "string" ? record.error_type : "";
+  const message = typeof record.message === "string" ? record.message : "";
+  if (
+    errorType === "stitch_auth_required" ||
+    message.toLowerCase().includes("stitch")
+  ) {
+    return {
+      error_type: errorType || undefined,
+      message: message || undefined,
+      instructions: Array.isArray(record.instructions)
+        ? record.instructions.filter((x): x is string => typeof x === "string")
+        : undefined,
+      fallback_note:
+        typeof record.fallback_note === "string" ? record.fallback_note : undefined,
+    };
+  }
+  return null;
+}
+
+export function getStitchAuthRequiredDetail(error: unknown): StitchAuthRequiredDetail | null {
+  if (!(error instanceof ApiError)) return null;
+  return (
+    asStitchAuthRequiredDetail(error.detail) ??
+    asStitchAuthRequiredDetail(
+      (error.detail as { detail?: unknown } | null | undefined)?.detail
+    )
+  );
+}
+
 function toProject(data: ProjectWire): Project {
   return {
     id: data.id,
@@ -190,8 +254,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail ?? body?.error?.message ?? `API error ${res.status}`);
+    const body = await res.json().catch(() => ({} as Record<string, unknown>));
+    const detail = (body as Record<string, unknown>)?.detail ?? body;
+    const message =
+      extractErrorMessage(detail) ??
+      extractErrorMessage((body as Record<string, unknown>)?.error) ??
+      `API error ${res.status}`;
+    throw new ApiError(res.status, message, detail);
   }
   return res.json();
 }
@@ -318,11 +387,17 @@ export async function submitApproval(
   projectId: string,
   stage: ApprovalStage,
   decision: "approved" | "rejected",
-  notes?: string
+  notes?: string,
+  stitch_auth?: StitchAuthPayload
 ): Promise<ApprovalEvent> {
   const data = await request<ApprovalEventWire>(`/v1/projects/${projectId}/approvals`, {
     method: "POST",
-    body: JSON.stringify({ stage, decision, notes }),
+    body: JSON.stringify({
+      stage,
+      decision,
+      notes,
+      stitch_auth: toWireStitchAuth(stitch_auth),
+    }),
   });
   return toApprovalEvent(data);
 }

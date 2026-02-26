@@ -20,16 +20,23 @@ from app.design.base import (
 )
 from app.design.provider_factory import regenerate_with_fallback
 from app.design.stitch_mcp import STITCH_TOOLS
-from app.models.enums import ArtifactType, DesignProvider, ProjectStatus
+from app.models.enums import ArtifactType, DesignProvider, ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
+from app.observability import emit_audit_event, emit_llm_usage_event
 from app.schemas.artifact import ArtifactResponse, ProjectArtifactResponse
 from app.schemas.design import DesignFeedbackRequest, DesignGenerateRequest, StitchAuthPayload
 
 router = APIRouter(tags=["design"])
 
-_DESIGN_VALID_STATUSES = {ProjectStatus.PRD_APPROVED, ProjectStatus.DESIGN_DRAFT}
+_DESIGN_VALID_STATUSES = {
+    ProjectStatus.PRD_APPROVED,
+    ProjectStatus.DESIGN_DRAFT,
+    # Allow reconnect workflow after a failed run so the operator can
+    # attach Stitch credentials and then resume from GenerateDesign.
+    ProjectStatus.FAILED,
+}
 
 
 async def _latest_run(db: AsyncSession, project_id: uuid.UUID) -> ProjectRun:
@@ -247,11 +254,44 @@ async def submit_design_feedback(
     except StitchAuthError as exc:
         raise HTTPException(status_code=401, detail=exc.action_payload) from exc
 
+    if (
+        preferred_provider == DesignProvider.STITCH_MCP
+        and str(provider_used) == str(DesignProvider.INTERNAL_SPEC)
+    ):
+        await emit_audit_event(
+            project_id,
+            None,
+            "design.provider_fallback",
+            {
+                "run_id": str(run.id),
+                "node": "DesignFeedback",
+                "from_provider": DesignProvider.STITCH_MCP,
+                "to_provider": DesignProvider.INTERNAL_SPEC,
+            },
+            db,
+        )
+
     version = await _next_design_version(db, project_id)
     artifact_content = regenerated.to_dict()
 
     merged_meta = dict(previous_meta)
     merged_meta.update(regenerated.metadata or {})
+    llm_meta = regenerated.metadata or {}
+    llm_usage_records = _extract_llm_usage_records(llm_meta)
+    total_estimated_cost_usd = 0.0
+    for usage in llm_usage_records:
+        total_estimated_cost_usd += await emit_llm_usage_event(
+            project_id=project_id,
+            run_id=run.id,
+            node="DesignFeedback",
+            model_profile=usage["profile"],
+            model_id=usage["model_id"],
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            db=db,
+        )
+    if llm_usage_records:
+        merged_meta["estimated_cost_usd"] = round(total_estimated_cost_usd, 8)
     merged_meta.update(
         {
             "provider_used": str(provider_used),
@@ -277,3 +317,61 @@ async def submit_design_feedback(
     await db.refresh(artifact)
 
     return {"artifact": ProjectArtifactResponse.model_validate(artifact)}
+
+
+def _coerce_int(raw: Any) -> int:
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return 0
+
+
+def _extract_llm_usage_records(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    raw_calls = meta.get("llm_calls")
+    if isinstance(raw_calls, list):
+        for call in raw_calls:
+            if not isinstance(call, dict):
+                continue
+            model_id = str(call.get("model_id", "")).strip()
+            if not model_id:
+                continue
+            profile_raw = str(call.get("profile_used", ModelProfile.CUSTOMTOOLS)).strip()
+            try:
+                profile = ModelProfile(profile_raw)
+            except ValueError:
+                profile = ModelProfile.CUSTOMTOOLS
+            records.append(
+                {
+                    "profile": profile,
+                    "model_id": model_id,
+                    "prompt_tokens": _coerce_int(call.get("prompt_tokens")),
+                    "completion_tokens": _coerce_int(call.get("completion_tokens")),
+                }
+            )
+
+    if records:
+        return records
+
+    model_id = str(meta.get("model_id", "")).strip()
+    if not model_id:
+        return []
+
+    profile_raw = str(meta.get("profile_used", ModelProfile.CUSTOMTOOLS)).strip()
+    try:
+        profile = ModelProfile(profile_raw)
+    except ValueError:
+        profile = ModelProfile.CUSTOMTOOLS
+
+    return [
+        {
+            "profile": profile,
+            "model_id": model_id,
+            "prompt_tokens": _coerce_int(meta.get("prompt_tokens")),
+            "completion_tokens": _coerce_int(meta.get("completion_tokens")),
+        }
+    ]

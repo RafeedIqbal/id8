@@ -20,6 +20,7 @@ from app.db import get_db
 from app.design.base import DesignOutput, Screen
 from app.main import create_app
 from app.models.approval_event import ApprovalEvent
+from app.models.audit_event import AuditEvent
 from app.models.enums import ApprovalStage, ArtifactType, ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
@@ -176,6 +177,155 @@ class TestGetProject:
         resp = await client.get(f"/v1/projects/{fake_id}")
         assert resp.status_code == 404
         assert "error" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/projects/{projectId}/metrics — getProjectMetrics
+# ---------------------------------------------------------------------------
+
+
+class TestProjectMetrics:
+    @pytest.mark.asyncio
+    async def test_aggregates_observability_metrics(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        events = [
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.node_completed",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "node": "GeneratePRD",
+                    "duration_ms": 30_000,
+                    "outcome": "success",
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.node_completed",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "node": "GeneratePRD",
+                    "duration_ms": 60_000,
+                    "outcome": "success",
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.node_completed",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "node": "GenerateDesign",
+                    "duration_ms": 150_000,
+                    "outcome": "success",
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.completed",
+                event_payload={"run_id": str(seed_run.id), "total_duration_ms": 600_000},
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="llm.usage_recorded",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "model_profile": "primary",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "estimated_cost_usd": 0.01,
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="llm.usage_recorded",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "model_profile": "customtools",
+                    "model_id": "gemini-3.1-pro-preview-customtools",
+                    "prompt_tokens": 200,
+                    "completion_tokens": 100,
+                    "estimated_cost_usd": 0.02,
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.retry_scheduled",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "node": "GeneratePRD",
+                    "retry_attempt": 1,
+                    "retry_delay_ms": 9_000,
+                    "failure_reason": "rate_limit",
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="run.failed",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "failure_reason": "rate_limit",
+                    "total_duration_ms": 700_000,
+                },
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="deploy.started",
+                event_payload={"run_id": str(seed_run.id)},
+            ),
+            AuditEvent(
+                project_id=seed_project.id,
+                actor_user_id=None,
+                event_type="deploy.failed",
+                event_payload={"run_id": str(seed_run.id)},
+            ),
+        ]
+        for event in events:
+            db.add(event)
+        await db.flush()
+
+        resp = await client.get(f"/v1/projects/{seed_project.id}/metrics")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["project_id"] == str(seed_project.id)
+        assert data["token_cost_totals"]["prompt_tokens"] == 300
+        assert data["token_cost_totals"]["completion_tokens"] == 150
+        assert data["token_cost_totals"]["total_tokens"] == 450
+        assert data["token_cost_totals"]["estimated_cost_usd"] == 0.03
+
+        stage_by_name = {row["stage"]: row for row in data["stage_slos"]}
+        assert stage_by_name["prd_generation"]["stats"]["count"] == 2
+        assert stage_by_name["prd_generation"]["stats"]["p50_ms"] == 45000.0
+        assert stage_by_name["design_generation"]["stats"]["count"] == 1
+        assert stage_by_name["end_to_end"]["stats"]["count"] == 2
+
+        retries_by_node = {row["node"]: row for row in data["retries"]}
+        assert retries_by_node["GeneratePRD"]["retry_count"] == 1
+        assert retries_by_node["GeneratePRD"]["retry_delay_ms"] == 9000.0
+
+        failure_reasons = {row["reason"]: row["count"] for row in data["failure_reasons"]}
+        assert failure_reasons["rate_limit"] == 2
+
+        assert data["deployment"]["attempts"] == 1
+        assert data["deployment"]["succeeded"] == 0
+        assert data["deployment"]["failed"] == 1
+        assert data["deployment"]["success_rate"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_returns_404_for_unknown_project(self, client: AsyncClient, seed_user: User) -> None:
+        resp = await client.get(f"/v1/projects/{uuid.uuid4()}/metrics")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +508,19 @@ class TestGenerateDesign:
         body = {"provider": "stitch_mcp", "model_profile": "primary"}
         resp = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body)
         assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_failed_project_allows_reconnect_setup(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_project.status = ProjectStatus.FAILED
+        await db.flush()
+
+        body = {"provider": "stitch_mcp", "model_profile": "customtools"}
+        resp = await client.post(f"/v1/projects/{seed_project.id}/design/generate", json=body)
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["artifact"]["artifact_type"] == "design_spec"
 
 
 # ---------------------------------------------------------------------------

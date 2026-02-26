@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from app.models.enums import ArtifactType
 from app.models.project_artifact import ProjectArtifact
+from app.observability import emit_llm_usage_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.write_code")
@@ -116,6 +117,9 @@ class WriteCodeHandler(NodeHandler):
         files_by_path: dict[str, dict[str, str]] = {}
         phase_file_counts: dict[str, int] = {}
         last_llm_response: Any | None = None
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_estimated_cost_usd = 0.0
 
         for phase in _GENERATION_PHASES:
             system_prompt, user_prompt = build_prompts(
@@ -145,6 +149,19 @@ class WriteCodeHandler(NodeHandler):
 
             if llm_response is not None:
                 last_llm_response = llm_response
+                total_prompt_tokens += llm_response.token_usage.prompt_tokens
+                total_completion_tokens += llm_response.token_usage.completion_tokens
+                estimated_cost_usd = await emit_llm_usage_event(
+                    project_id=ctx.project_id,
+                    run_id=ctx.run_id,
+                    node=f"{ctx.current_node}:{phase}",
+                    model_profile=llm_response.profile_used,
+                    model_id=llm_response.model_id,
+                    prompt_tokens=llm_response.token_usage.prompt_tokens,
+                    completion_tokens=llm_response.token_usage.completion_tokens,
+                    db=ctx.db,
+                )
+                total_estimated_cost_usd += estimated_cost_usd
 
             phase_file_counts[phase] = 0
             for item in chunk_files:
@@ -198,6 +215,10 @@ class WriteCodeHandler(NodeHandler):
             ),
             "generation_phases": list(_GENERATION_PHASES),
             "phase_file_counts": phase_file_counts,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_prompt_tokens + total_completion_tokens,
+            "estimated_cost_usd": round(total_estimated_cost_usd, 8),
         }
 
         logger.info(

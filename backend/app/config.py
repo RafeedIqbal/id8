@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # Google Gemini
     gemini_api_key: str = ""
+    llm_pricing_json: str = ""
 
     # Supabase Management API (for provisioning generated-app projects)
     supabase_access_token: str = ""  # Personal access token for Management API

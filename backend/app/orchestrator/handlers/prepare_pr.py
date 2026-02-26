@@ -37,6 +37,7 @@ from app.github.client import (
 from app.models.enums import ArtifactType
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
+from app.observability import emit_audit_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 from app.orchestrator.retry import RateLimitError
 
@@ -294,6 +295,19 @@ async def _run_github_flow(
         merge_result.sha,
         ctx.run_id,
     )
+    await emit_audit_event(
+        ctx.project_id,
+        None,
+        "github.pr_merged",
+        {
+            "run_id": str(ctx.run_id),
+            "repository": project.github_repo_url,
+            "pr_number": pr_info.number,
+            "pr_url": pr_info.html_url,
+            "merge_commit_sha": merge_result.sha,
+        },
+        ctx.db,
+    )
 
     metadata = {
         "github_repo_url": project.github_repo_url,
@@ -370,6 +384,18 @@ async def _create_project_repo(
     owner: str = user_data["login"]
 
     repo_info = await client.create_repo(repo_name, private=True)
+    await emit_audit_event(
+        ctx.project_id,
+        None,
+        "github.repo_created",
+        {
+            "run_id": str(ctx.run_id),
+            "repository": repo_info.html_url,
+            "owner": owner,
+            "name": repo_info.name,
+        },
+        ctx.db,
+    )
 
     # Persist repo URL so future runs/resumes find it.
     project.github_repo_url = repo_info.html_url
@@ -439,7 +465,7 @@ async def _ensure_pull_request(
         run_id=ctx.run_id,
         project_id=ctx.project_id,
     )
-    return await client.create_pull_request(
+    pr_info = await client.create_pull_request(
         owner,
         repo,
         head=branch_name,
@@ -447,6 +473,21 @@ async def _ensure_pull_request(
         title=title,
         body=body,
     )
+    await emit_audit_event(
+        ctx.project_id,
+        None,
+        "github.pr_created",
+        {
+            "run_id": str(ctx.run_id),
+            "repository": f"https://github.com/{owner}/{repo}",
+            "pr_number": pr_info.number,
+            "pr_url": pr_info.html_url,
+            "branch": branch_name,
+            "base": base,
+        },
+        ctx.db,
+    )
+    return pr_info
 
 
 async def _find_closed_pull_request(

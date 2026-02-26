@@ -350,6 +350,8 @@ components:
             - rejected
         notes:
           type: string
+        stitch_auth:
+          $ref: '#/components/schemas/StitchAuthPayload'
       required:
         - stage
         - decision

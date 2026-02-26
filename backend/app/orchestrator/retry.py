@@ -73,6 +73,7 @@ async def schedule_retry(
         delay = max(delay, minimum_delay_seconds)
     scheduled_for = datetime.now(tz=UTC) + timedelta(seconds=delay)
     payload: dict[str, str | float] = {"error": error_message}
+    payload["delay_seconds"] = round(delay, 4)
     if use_fallback_profile:
         payload["model_profile"] = "fallback"
     if minimum_delay_seconds is not None:

@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.models.enums import ArtifactType
 from app.models.project_artifact import ProjectArtifact
+from app.observability import emit_audit_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 from app.schemas.security_report import SecurityFinding, SecurityReportContent, SecuritySummary
 
@@ -87,6 +88,20 @@ class SecurityGateHandler(NodeHandler):
             summary.high,
             summary.medium,
             summary.low,
+        )
+        await emit_audit_event(
+            ctx.project_id,
+            None,
+            "security.scan_completed",
+            {
+                "run_id": str(ctx.run_id),
+                "node": ctx.current_node,
+                "passed": passed,
+                "summary": summary.model_dump(),
+                "blocking_count": len(blocking),
+                "scan_tools": scan_tools,
+            },
+            ctx.db,
         )
 
         # 6. Build report artifact.

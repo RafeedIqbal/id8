@@ -108,6 +108,7 @@ class InternalSpecProvider(DesignProvider):
     ) -> tuple[DesignOutput, dict[str, Any]]:
         """Call the LLM with retry on parse failure."""
         last_error: str | None = None
+        llm_calls: list[dict[str, Any]] = []
 
         for attempt in range(_MAX_PARSE_RETRIES + 1):
             effective_system = system_prompt
@@ -124,6 +125,15 @@ class InternalSpecProvider(DesignProvider):
                 prompt=user_prompt,
                 system_prompt=effective_system,
             )
+            llm_calls.append(
+                {
+                    "model_id": llm_response.model_id,
+                    "profile_used": str(llm_response.profile_used),
+                    "prompt_tokens": llm_response.token_usage.prompt_tokens,
+                    "completion_tokens": llm_response.token_usage.completion_tokens,
+                    "attempt": attempt + 1,
+                }
+            )
 
             output, parse_error = _parse_llm_response(llm_response.content)
             if output is not None:
@@ -132,6 +142,7 @@ class InternalSpecProvider(DesignProvider):
                     "profile_used": str(llm_response.profile_used),
                     "prompt_tokens": llm_response.token_usage.prompt_tokens,
                     "completion_tokens": llm_response.token_usage.completion_tokens,
+                    "llm_calls": llm_calls,
                 }
                 return output, meta
 

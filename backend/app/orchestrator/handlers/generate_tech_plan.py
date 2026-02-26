@@ -16,6 +16,7 @@ from sqlalchemy import select
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ArtifactType
 from app.models.project_artifact import ProjectArtifact
+from app.observability import emit_llm_usage_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.generate_tech_plan")
@@ -85,6 +86,16 @@ class GenerateTechPlanHandler(NodeHandler):
                 node_name=ctx.current_node,
                 prompt=user_prompt,
                 system_prompt=effective_system,
+            )
+            await emit_llm_usage_event(
+                project_id=ctx.project_id,
+                run_id=ctx.run_id,
+                node=ctx.current_node,
+                model_profile=llm_response.profile_used,
+                model_id=llm_response.model_id,
+                prompt_tokens=llm_response.token_usage.prompt_tokens,
+                completion_tokens=llm_response.token_usage.completion_tokens,
+                db=ctx.db,
             )
 
             # 5. Parse and validate

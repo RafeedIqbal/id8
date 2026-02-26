@@ -22,9 +22,10 @@ from app.design.base import (
 )
 from app.design.provider_factory import generate_with_fallback, regenerate_with_fallback
 from app.models.approval_event import ApprovalEvent
-from app.models.enums import ApprovalStage, ArtifactType, DesignProvider
+from app.models.enums import ApprovalStage, ArtifactType, DesignProvider, ModelProfile
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
+from app.observability import emit_audit_event, emit_llm_usage_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.generate_design")
@@ -56,6 +57,7 @@ class GenerateDesignHandler(NodeHandler):
             or pending.get("provider")
             or DesignProvider.STITCH_MCP
         )
+        preferred_provider_name = str(preferred_provider)
         constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
         auth = (
             _extract_auth(payload)
@@ -111,6 +113,39 @@ class GenerateDesignHandler(NodeHandler):
             "provider_used": provider_used,
             **(output.metadata or {}),
         }
+        if (
+            preferred_provider_name == str(DesignProvider.STITCH_MCP)
+            and str(provider_used) == str(DesignProvider.INTERNAL_SPEC)
+        ):
+            await emit_audit_event(
+                ctx.project_id,
+                None,
+                "design.provider_fallback",
+                {
+                    "run_id": str(ctx.run_id),
+                    "node": ctx.current_node,
+                    "from_provider": DesignProvider.STITCH_MCP,
+                    "to_provider": DesignProvider.INTERNAL_SPEC,
+                },
+                ctx.db,
+            )
+
+        llm_meta = output.metadata or {}
+        total_estimated_cost_usd = 0.0
+        llm_usage_records = _extract_llm_usage_records(llm_meta)
+        for usage in llm_usage_records:
+            total_estimated_cost_usd += await emit_llm_usage_event(
+                project_id=ctx.project_id,
+                run_id=ctx.run_id,
+                node=ctx.current_node,
+                model_profile=usage["profile"],
+                model_id=usage["model_id"],
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                db=ctx.db,
+            )
+        if llm_usage_records:
+            artifact_data["__design_metadata"]["estimated_cost_usd"] = round(total_estimated_cost_usd, 8)
         if feedback_text:
             artifact_data["__design_metadata"]["feedback_applied"] = feedback_text
 
@@ -233,3 +268,61 @@ async def _load_rejection_feedback(ctx: RunContext) -> str | None:
     if event is not None and event.notes:
         return event.notes
     return None
+
+
+def _coerce_int(raw: Any) -> int:
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return 0
+
+
+def _extract_llm_usage_records(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    raw_calls = meta.get("llm_calls")
+    if isinstance(raw_calls, list):
+        for call in raw_calls:
+            if not isinstance(call, dict):
+                continue
+            model_id = str(call.get("model_id", "")).strip()
+            if not model_id:
+                continue
+            profile_raw = str(call.get("profile_used", ModelProfile.CUSTOMTOOLS)).strip()
+            try:
+                profile = ModelProfile(profile_raw)
+            except ValueError:
+                profile = ModelProfile.CUSTOMTOOLS
+            records.append(
+                {
+                    "profile": profile,
+                    "model_id": model_id,
+                    "prompt_tokens": _coerce_int(call.get("prompt_tokens")),
+                    "completion_tokens": _coerce_int(call.get("completion_tokens")),
+                }
+            )
+
+    if records:
+        return records
+
+    model_id = str(meta.get("model_id", "")).strip()
+    if not model_id:
+        return []
+
+    profile_raw = str(meta.get("profile_used", ModelProfile.CUSTOMTOOLS)).strip()
+    try:
+        profile = ModelProfile(profile_raw)
+    except ValueError:
+        profile = ModelProfile.CUSTOMTOOLS
+
+    return [
+        {
+            "profile": profile,
+            "model_id": model_id,
+            "prompt_tokens": _coerce_int(meta.get("prompt_tokens")),
+            "completion_tokens": _coerce_int(meta.get("completion_tokens")),
+        }
+    ]
