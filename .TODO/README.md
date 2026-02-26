@@ -17,6 +17,7 @@
 10-github-integration ◄── 09-security-gate
 11-deployment-pipeline ◄── 10-github-integration
 12-frontend-operator-console ◄── 02-api-routes-skeleton
+15-project-lifecycle-and-artifact-ux-fixes ◄── 12-frontend-operator-console
 14-acceptance-testing ◄── ALL
 ```
 
@@ -28,6 +29,7 @@ After Task 03 (orchestrator) is done, these can proceed in parallel:
 - Task 13 (observability — only needs orchestrator hooks)
 
 Tasks 09 → 10 → 11 are sequential (security → GitHub → deploy).
+Task 15 is a post-Task-12 polish pass and should complete before Task 14 acceptance testing.
 
 ## Task List
 
@@ -47,4 +49,5 @@ Tasks 09 → 10 → 11 are sequential (security → GitHub → deploy).
 | 11 | [Deployment Pipeline](11-deployment-pipeline.md) | Supabase + Vercel provisioning and deploy |
 | 12 | [Frontend Console](12-frontend-operator-console.md) | Next.js operator UI for all workflows |
 | 13 | [Observability](13-observability.md) | Metrics, audit events, cost tracking |
+| 15 | [Project Lifecycle + Artifact UX Fixes](15-project-lifecycle-and-artifact-ux-fixes.md) | Timeline replay, artifact nav cleanup, delete/restart, stack constraints, viewer fixes |
 | 14 | [Acceptance Testing](14-acceptance-testing.md) | All 8 QA scenarios + go/no-go report |

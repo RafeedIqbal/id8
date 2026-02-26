@@ -473,6 +473,35 @@ class TestCreateRun:
         assert data["current_node"] == "GeneratePRD"
         assert data["last_error_code"] is None
 
+    @pytest.mark.asyncio
+    async def test_resume_allows_node_reached_via_audit_events(
+        self, client: AsyncClient, db: AsyncSession, seed_project: Project, seed_run: ProjectRun
+    ) -> None:
+        seed_run.status = ProjectStatus.FAILED
+        seed_run.current_node = "EndFailed"
+
+        db.add(
+            AuditEvent(
+                project_id=seed_project.id,
+                event_type="run.node_entered",
+                event_payload={
+                    "run_id": str(seed_run.id),
+                    "node": "WriteCode",
+                    "attempt": 1,
+                },
+            )
+        )
+        await db.flush()
+
+        resp = await client.post(
+            f"/v1/projects/{seed_project.id}/runs",
+            json={"resume_from_node": "WriteCode"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["id"] == str(seed_run.id)
+        assert data["current_node"] == "WriteCode"
+
 
 # ---------------------------------------------------------------------------
 # POST /v1/projects/{projectId}/design/generate — generateDesign

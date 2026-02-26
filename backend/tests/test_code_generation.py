@@ -728,8 +728,90 @@ class TestCodeValidation:
         assert result.error is not None
         assert "syntax error" in result.error.lower()
         assert result.context_updates is not None
+        assert result.context_updates.get("repair_attempted") is True
         errors = result.context_updates.get("validation_errors", [])
         assert any("syntax error" in err.lower() for err in errors)
+
+    @pytest.mark.asyncio
+    async def test_validation_repair_pass_can_fix_snapshot(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        bad_chunk = {
+            "files": [
+                {
+                    "path": "frontend/package.json",
+                    "content": (
+                        '{"name":"weather-app","private":true,"scripts":{"build":"vite build"},'
+                        '"dependencies":{"react":"^18.0.0","react-dom":"^18.0.0","vite":"^5.0.0"}}\n'
+                    ),
+                    "language": "json",
+                },
+                {
+                    "path": ".env.example",
+                    "content": "NEXT_PUBLIC_SUPABASE_URL=\nNEXT_PUBLIC_SUPABASE_ANON_KEY=\n",
+                    "language": "text",
+                },
+                {
+                    "path": "frontend/src/main.jsx",
+                    "content": (
+                        "import React from 'react';\n"
+                        "import { createRoot } from 'react-dom/client';\n"
+                        "import App from './App';\n"
+                        "createRoot(document.getElementById('root')).render(<App />);\n"
+                    ),
+                    "language": "javascript",
+                },
+                {
+                    "path": "frontend/src/App.jsx",
+                    "content": (
+                        "export default function App() {\n"
+                        "  const title = \"Weather;\n"
+                        "  return <h1>{title}</h1>;\n"
+                        "}\n"
+                    ),
+                    "language": "javascript",
+                },
+            ]
+        }
+        repair_chunk = {
+            "files": [
+                {
+                    "path": "frontend/src/App.jsx",
+                    "content": (
+                        "export default function App() {\n"
+                        "  const title = \"Weather\";\n"
+                        "  return <h1>{title}</h1>;\n"
+                        "}\n"
+                    ),
+                    "language": "javascript",
+                }
+            ]
+        }
+
+        side_effect = [
+            _mock_llm_response(json.dumps(bad_chunk)),
+            _mock_llm_response(json.dumps(bad_chunk)),
+            _mock_llm_response(json.dumps(bad_chunk)),
+            _mock_llm_response(json.dumps(bad_chunk)),
+            _mock_llm_response(json.dumps(repair_chunk)),
+        ]
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(db, seed_run)
+
+        mock_gen = AsyncMock(side_effect=side_effect)
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            mock_gen,
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "success"
+        assert mock_gen.await_count == 5
+        assert result.artifact_data is not None
+        meta = result.artifact_data["__code_metadata"]
+        assert meta["repair_attempted"] is True
+        assert meta["repair_updates"] >= 1
 
     @pytest.mark.asyncio
     async def test_missing_entry_point_fails_validation(
@@ -798,6 +880,67 @@ class TestCodeValidation:
         assert result.error is not None
         assert "dependency manifest" in result.error.lower()
 
+    @pytest.mark.asyncio
+    async def test_frontend_only_snapshot_passes_minimal_deploy_validation(
+        self, db: AsyncSession, seed_run: ProjectRun, seed_project: Project
+    ) -> None:
+        snapshot = {
+            "files": [
+                {
+                    "path": "frontend/package.json",
+                    "content": (
+                        '{"name":"weather-app","private":true,"scripts":{"build":"vite build"},'
+                        '"dependencies":{"react":"^18.0.0","react-dom":"^18.0.0","vite":"^5.0.0"}}\n'
+                    ),
+                    "language": "json",
+                },
+                {
+                    "path": "frontend/index.html",
+                    "content": "<!doctype html><html><body><div id=\"root\"></div></body></html>\n",
+                    "language": "html",
+                },
+                {
+                    "path": "frontend/src/main.jsx",
+                    "content": (
+                        "import React from 'react';\n"
+                        "import { createRoot } from 'react-dom/client';\n"
+                        "import App from './App';\n"
+                        "createRoot(document.getElementById('root')).render(<App />);\n"
+                    ),
+                    "language": "javascript",
+                },
+                {
+                    "path": "frontend/src/App.jsx",
+                    "content": "export default function App() { return <h1>Weather App</h1>; }\n",
+                    "language": "javascript",
+                },
+                {
+                    "path": ".env.example",
+                    "content": (
+                        "NEXT_PUBLIC_SUPABASE_URL=\n"
+                        "NEXT_PUBLIC_SUPABASE_ANON_KEY=\n"
+                    ),
+                    "language": "text",
+                },
+            ],
+            "build_command": "npm run build",
+            "test_command": "npm test",
+            "entry_point": "frontend/src/main.jsx",
+        }
+
+        handler = WriteCodeHandler()
+        ctx = _make_ctx(db, seed_run)
+
+        with patch(
+            "app.orchestrator.handlers.write_code.generate_with_fallback",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response(json.dumps(snapshot)),
+        ):
+            result = await handler.execute(ctx)
+
+        assert result.outcome == "success"
+        assert result.error is None
+
 
 # ---------------------------------------------------------------------------
 # 5. Prompt template tests
@@ -820,6 +963,7 @@ class TestCodeGenerationPromptTemplates:
         assert "/tasks" in user
         assert "dashboard" in user.lower()
         assert "task management" in user.lower()
+        assert "deploy-baseline artifacts" in system.lower()
 
     def test_prompt_with_security_feedback(self) -> None:
         from app.llm.prompts.code_generation import build_prompts
@@ -850,3 +994,22 @@ class TestCodeGenerationPromptTemplates:
             },
         )
         assert "__node_name" not in user
+
+    def test_chunk_prompt_includes_generated_file_inventory(self) -> None:
+        from app.llm.prompts.code_generation import build_prompts
+
+        _, user = build_prompts(
+            previous_artifacts={
+                "tech_plan": _SAMPLE_TECH_PLAN,
+                "design_spec": _SAMPLE_DESIGN,
+                "prd": _SAMPLE_PRD,
+            },
+            chunk="frontend",
+            generated_files=[
+                {"path": "frontend/src/App.jsx", "content": "export default function App() {}", "language": "javascript"},
+                {"path": "frontend/src/main.jsx", "content": "import App from './App';", "language": "javascript"},
+            ],
+        )
+        assert "current file path inventory" in user.lower()
+        assert "frontend/src/app.jsx" in user.lower()
+        assert "frontend/src/main.jsx" in user.lower()

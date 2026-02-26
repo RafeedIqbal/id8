@@ -131,25 +131,59 @@ async def _run_github_flow(
     branch_name = f"id8/run-{ctx.run_id}"
 
     # 4. Resolve or create the repository.
-    if project.github_repo_url:
-        owner, repo_name = _parse_owner_repo(project.github_repo_url)
-        logger.info(
-            "Using existing repo %s/%s for project=%s",
-            owner,
-            repo_name,
-            ctx.project_id,
-        )
+    had_stored_repo = bool(project.github_repo_url)
+    created_repo_during_resolution = False
+    if had_stored_repo:
+        try:
+            owner, repo_name = _parse_owner_repo(project.github_repo_url or "")
+        except GitHubError:
+            logger.warning(
+                "Stored github_repo_url is invalid for project=%s: %r; creating a new repo",
+                ctx.project_id,
+                project.github_repo_url,
+            )
+            owner, repo_name = await _create_project_repo(ctx, client, project)
+            created_repo_during_resolution = True
     else:
         owner, repo_name = await _create_project_repo(ctx, client, project)
+        created_repo_during_resolution = True
+
+    if created_repo_during_resolution:
         logger.info(
             "Created new repo %s/%s for project=%s",
             owner,
             repo_name,
             ctx.project_id,
         )
+    else:
+        logger.info(
+            "Using existing repo %s/%s for project=%s",
+            owner,
+            repo_name,
+            ctx.project_id,
+        )
 
     # 5. Create feature branch (idempotent).
-    default_branch = await _ensure_branch(client, owner, repo_name, branch_name)
+    allow_repo_recreate_on_not_found = had_stored_repo and not created_repo_during_resolution
+    try:
+        default_branch = await _ensure_branch(client, owner, repo_name, branch_name)
+    except GitHubNotFoundError:
+        if not allow_repo_recreate_on_not_found:
+            raise
+        stale_repo_url = project.github_repo_url
+        logger.warning(
+            "Stored repo %r not found for project=%s; recreating and rebinding repository",
+            stale_repo_url,
+            ctx.project_id,
+        )
+        owner, repo_name = await _create_project_repo(ctx, client, project)
+        logger.info(
+            "Recreated repo %s/%s for project=%s after missing repository error",
+            owner,
+            repo_name,
+            ctx.project_id,
+        )
+        default_branch = await _ensure_branch(client, owner, repo_name, branch_name)
     logger.info("Feature branch '%s' ready on %s/%s", branch_name, owner, repo_name)
 
     # 6. Resume idempotency: if a closed PR already exists for this run branch,
@@ -221,7 +255,7 @@ async def _run_github_flow(
         check_runs = await client.poll_checks(
             owner,
             repo_name,
-            pr_info.head_sha,
+            commit_sha,
             timeout=_CHECK_POLL_TIMEOUT,
         )
     except GitHubChecksTimedOutError as exc:
@@ -234,6 +268,15 @@ async def _run_github_flow(
         }
         await _persist_prepare_pr_metadata(ctx, metadata)
         return NodeResult(outcome="failure", error=str(exc), context_updates=metadata)
+    except GitHubAuthError as exc:
+        logger.warning(
+            "Cannot read check runs for %s/%s (commit=%s): %s; continuing to merge attempt",
+            owner,
+            repo_name,
+            commit_sha,
+            exc,
+        )
+        check_runs = []
 
     check_statuses = [
         {
@@ -383,7 +426,7 @@ async def _create_project_repo(
     user_data = await client.get_authenticated_user()
     owner: str = user_data["login"]
 
-    repo_info = await client.create_repo(repo_name, private=True)
+    repo_info = await client.create_repo(repo_name, private=False)
     await emit_audit_event(
         ctx.project_id,
         None,

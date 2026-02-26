@@ -9,6 +9,7 @@ import { NodeTimeline } from "@/components/node-timeline";
 import { ArtifactCard } from "@/components/artifact-card";
 import { EmptyState } from "@/components/empty-state";
 import { NODE_LABELS } from "@/lib/constants";
+import { resolveResumeNode } from "@/lib/run-failure";
 import { formatDateTime, truncate } from "@/lib/utils";
 import type { ArtifactType, ApprovalStage, ProjectStatus } from "@/types/domain";
 
@@ -23,40 +24,6 @@ const WAITING_STAGES: Record<string, ApprovalStage> = {
   WaitTechPlanApproval: "tech_plan",
   WaitDeployApproval: "deploy",
 };
-
-const TERMINAL_NODES = new Set(["EndSuccess", "EndFailed"]);
-
-function resolveResumeNode(
-  currentNode: string | undefined,
-  timeline: { eventType: string; toNode: string; fromNode?: string }[] | undefined
-): string | undefined {
-  if (!currentNode) return undefined;
-  if (!TERMINAL_NODES.has(currentNode)) return currentNode;
-
-  const events = timeline ?? [];
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (
-      event.eventType === "orchestrator.run_failed" &&
-      event.fromNode &&
-      !TERMINAL_NODES.has(event.fromNode)
-    ) {
-      return event.fromNode;
-    }
-  }
-
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (event.fromNode && !TERMINAL_NODES.has(event.fromNode)) {
-      return event.fromNode;
-    }
-    if (event.toNode && !TERMINAL_NODES.has(event.toNode)) {
-      return event.toNode;
-    }
-  }
-
-  return "IngestPrompt";
-}
 
 const COST_PER_1K_TOKENS: Record<string, number> = {
   primary: 0.01,
@@ -151,7 +118,11 @@ export default function ProjectDetailPage({
   // Determine if we're at a waiting node (approval gate)
   const currentNode = runDetail?.currentNode;
   const waitingStage = currentNode ? WAITING_STAGES[currentNode] : undefined;
-  const resumeNode = resolveResumeNode(runDetail?.currentNode, runDetail?.timeline);
+  const resumeNode = resolveResumeNode(
+    runDetail?.currentNode,
+    runDetail?.timeline,
+    project.status === "failed"
+  );
   const resumeLabel = resumeNode ? (NODE_LABELS[resumeNode] ?? resumeNode) : "Failed Step";
   const stitchAuthError =
     runDetail?.lastErrorMessage?.toLowerCase().includes("stitch") ||

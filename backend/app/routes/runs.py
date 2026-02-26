@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -175,6 +175,23 @@ async def _was_node_previously_reached(
             target_idx = -1
         if previous_idx >= 0 and target_idx >= 0 and previous_idx >= target_idx:
             return True
+
+    # If the run has already reached EndFailed, infer node reachability from
+    # audit events as a durable source of execution history.
+    audit_result = await db.execute(
+        select(AuditEvent.id)
+        .where(
+            AuditEvent.event_payload["run_id"].astext == str(previous_run.id),
+            or_(
+                AuditEvent.event_payload["node"].astext == str(resume_node),
+                AuditEvent.event_payload["to_node"].astext == str(resume_node),
+                AuditEvent.event_payload["from_node"].astext == str(resume_node),
+            ),
+        )
+        .limit(1)
+    )
+    if audit_result.scalar_one_or_none() is not None:
+        return True
 
     artifact_type = artifact_type_for_node(resume_node)
     if artifact_type is not None:

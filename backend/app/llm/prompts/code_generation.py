@@ -14,6 +14,10 @@ Rules:
 3. Include dependency manifests and runtime configuration.
 4. Every local import must resolve to another file in the set.
 5. Never include secrets. Use environment variables.
+6. Ensure deploy-baseline artifacts exist:
+   - Vercel/frontend: package manifest plus runtime entry file.
+   - Supabase: SQL migrations when schema requires DB changes.
+   - Environment template: `.env.example` placeholders only.
 
 You MUST return a single valid JSON object:
 {
@@ -35,13 +39,19 @@ Rules:
 1. Output only files for the requested phase.
 2. Use complete, production-ready content.
 3. Do not include secrets; use env vars.
-4. Keep imports consistent with already-generated files.
+4. Keep imports consistent with already-generated files and file inventory.
 5. Return only valid JSON with this shape:
 {
   "files": [
     {"path": "relative/path/to/file.ext", "content": "full file contents", "language": "python"}
   ]
 }
+6. Every relative JS/TS import must resolve to a generated file path.
+7. Use stable paths under `frontend/`, `backend/`, `db/` or `supabase/`.
+8. Ensure deploy-baseline artifacts exist across phases:
+   - Vercel/frontend: `package.json` (root or frontend) plus at least one frontend runtime entry file.
+   - Supabase: SQL migrations in `supabase/migrations/` or `db/migrations/` when schema requires DB changes.
+   - Environment template: `.env.example` with placeholders (never real secrets).
 
 Return ONLY JSON.
 """
@@ -100,6 +110,9 @@ Chunk-specific requirements:
 
 ## Files generated in previous chunks
 {generated_files}
+
+## Current file path inventory (authoritative)
+{generated_file_index}
 {security_feedback_block}
 {previous_code_block}
 Return only JSON with a `files` array for this phase.
@@ -108,17 +121,23 @@ Return only JSON with a `files` array for this phase.
 _CHUNK_REQUIREMENTS = {
     "backend": (
         "Create backend API routes, domain models, and services using tech plan "
-        "`api_routes` and `database_schema`."
+        "`api_routes` and `database_schema`. If backend is required, include "
+        "`backend/app/main.py` as an executable entrypoint and ensure Python imports resolve."
     ),
     "frontend": (
         "Create frontend pages/components using tech plan `component_hierarchy` "
-        "and design `screens`."
+        "and design `screens`. Ensure every relative import points to an emitted file "
+        "(hooks, store, api, pages, components)."
     ),
     "config": (
         "Create configuration/manifests (requirements/package manifests, Docker, env examples, "
-        "framework config files) needed to build and run."
+        "framework config files) needed to build and run. Include deploy-ready config for "
+        "Vercel and env placeholders for Supabase public keys when applicable."
     ),
-    "migrations": "Create database migration files aligned with the defined schema.",
+    "migrations": (
+        "Create database migration files aligned with the defined schema. Prefer "
+        "`supabase/migrations/*.sql` (or `db/migrations/*.sql`) so deploy can apply them."
+    ),
 }
 
 
@@ -157,6 +176,29 @@ def _serialize_generated_files(files: list[dict[str, Any]] | None) -> str:
             content = content[:2000] + "\n# ...truncated for context..."
         parts.append(f"### {path}\n```{language}\n{content}\n```")
     return "\n\n".join(parts)
+
+
+def _serialize_generated_file_index(files: list[dict[str, Any]] | None) -> str:
+    """Serialize a compact list of generated paths for import/dependency planning."""
+    if not files:
+        return "(none yet)"
+
+    paths = sorted(
+        {
+            str(file_data.get("path", "")).strip()
+            for file_data in files
+            if str(file_data.get("path", "")).strip()
+        }
+    )
+    if not paths:
+        return "(none yet)"
+
+    max_paths = 400
+    display = paths[:max_paths]
+    lines = [f"- {path}" for path in display]
+    if len(paths) > max_paths:
+        lines.append(f"- ... ({len(paths) - max_paths} more paths omitted)")
+    return "\n".join(lines)
 
 
 def build_prompts(
@@ -218,6 +260,7 @@ def build_prompts(
         design_spec_content=design_spec,
         prd_content=prd,
         generated_files=_serialize_generated_files(generated_files),
+        generated_file_index=_serialize_generated_file_index(generated_files),
         security_feedback_block=security_feedback_block,
         previous_code_block=previous_code_block,
     )

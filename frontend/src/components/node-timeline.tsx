@@ -4,39 +4,9 @@ import { PIPELINE_NODES, NODE_LABELS } from "@/lib/constants";
 import type { RunTimelineEvent } from "@/types/domain";
 import { formatTime } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { inferFailureNode } from "@/lib/run-failure";
 
 type NodeState = "completed" | "current" | "pending" | "failed";
-
-const TERMINAL_NODES = new Set(["EndSuccess", "EndFailed"]);
-
-function inferFailedNode(
-  currentNode: string | undefined,
-  timeline: RunTimelineEvent[],
-  isFailed: boolean
-): string | undefined {
-  if (!isFailed) return undefined;
-  if (currentNode && currentNode !== "EndFailed") return currentNode;
-
-  for (let i = timeline.length - 1; i >= 0; i -= 1) {
-    const event = timeline[i];
-    if (
-      event.eventType === "orchestrator.run_failed" &&
-      event.fromNode &&
-      !TERMINAL_NODES.has(event.fromNode)
-    ) {
-      return event.fromNode;
-    }
-  }
-
-  for (let i = timeline.length - 1; i >= 0; i -= 1) {
-    const event = timeline[i];
-    if (event.toNode && !TERMINAL_NODES.has(event.toNode)) {
-      return event.toNode;
-    }
-  }
-
-  return undefined;
-}
 
 function getNodeStates(
   currentNode: string | undefined,
@@ -122,7 +92,7 @@ export function NodeTimeline({
   status?: string;
 }) {
   const isFailed = status === "failed";
-  const failedNode = inferFailedNode(currentNode, timeline, isFailed);
+  const failedNode = inferFailureNode(currentNode, timeline, isFailed);
   const nodeStates = getNodeStates(currentNode, timeline, isFailed, failedNode);
 
   // Hide EndFailed when we can map failure to a concrete pipeline node.

@@ -16,6 +16,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -482,10 +483,11 @@ class GitHubClient:
 
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[CheckRun]:
         """Return all check runs for *ref* (commit SHA or branch name)."""
+        ref_escaped = quote(ref, safe="")
         data: dict[str, Any] = await self._request(
             "GET",
-            f"/repos/{owner}/{repo}/check-runs",
-            params={"ref": ref, "per_page": "100"},
+            f"/repos/{owner}/{repo}/commits/{ref_escaped}/check-runs",
+            params={"per_page": "100"},
         )  # type: ignore[assignment]
         return [_check_run_from_json(item) for item in data.get("check_runs", [])]
 

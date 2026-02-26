@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from app.orchestrator.nodes import NodeName
 
-# Outcome keys: success, approved, rejected, passed, failed
+# Outcome keys: success, approved, rejected, passed, failed/failure
 TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
     NodeName.INGEST_PROMPT: {"success": NodeName.GENERATE_PRD, "failure": NodeName.END_FAILED},
     NodeName.GENERATE_PRD: {"success": NodeName.WAIT_PRD_APPROVAL, "failure": NodeName.END_FAILED},
@@ -20,7 +20,11 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
     NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.GENERATE_TECH_PLAN, "rejected": NodeName.GENERATE_DESIGN},
     NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_TECH_PLAN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_TECH_PLAN},
-    NodeName.WRITE_CODE: {"success": NodeName.SECURITY_GATE, "failure": NodeName.END_FAILED},
+    NodeName.WRITE_CODE: {
+        "success": NodeName.SECURITY_GATE,
+        "failure": NodeName.END_FAILED,
+        "failed": NodeName.END_FAILED,
+    },
     NodeName.SECURITY_GATE: {"passed": NodeName.PREPARE_PR, "failed": NodeName.WRITE_CODE, "failure": NodeName.END_FAILED},
     NodeName.PREPARE_PR: {"success": NodeName.WAIT_DEPLOY_APPROVAL, "failure": NodeName.END_FAILED},
     NodeName.WAIT_DEPLOY_APPROVAL: {"approved": NodeName.DEPLOY_PRODUCTION, "rejected": NodeName.END_FAILED},
@@ -45,7 +49,13 @@ def resolve_next_node(current_node: str, outcome: str) -> str:
     outcomes = TRANSITIONS.get(node)
     if outcomes is None:
         raise InvalidTransitionError(f"No transitions defined for node '{current_node}'")
-    next_node = outcomes.get(outcome)
+
+    normalized_outcome = outcome.strip().lower()
+    next_node = outcomes.get(normalized_outcome)
+    if next_node is None:
+        alias = {"failed": "failure", "failure": "failed"}.get(normalized_outcome)
+        if alias:
+            next_node = outcomes.get(alias)
     if next_node is None:
         raise InvalidTransitionError(f"No transition for node '{current_node}' with outcome '{outcome}'")
     return str(next_node)

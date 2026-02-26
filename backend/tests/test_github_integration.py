@@ -33,8 +33,10 @@ from app.github.client import (
 from app.orchestrator.handlers.prepare_pr import (
     PreparePRHandler,
     _build_pr_title,
+    _create_project_repo,
     _find_closed_pull_request,
     _generate_repo_name,
+    _run_github_flow,
 )
 
 
@@ -456,6 +458,9 @@ async def test_get_check_runs_returns_list() -> None:
     assert isinstance(runs[0], CheckRun)
     assert runs[0].conclusion == "success"
     assert runs[1].status == "in_progress"
+    assert mock_req.call_args.args[0] == "GET"
+    assert mock_req.call_args.args[1] == "/repos/owner/repo/commits/abc123/check-runs"
+    assert mock_req.call_args.kwargs["params"] == {"per_page": "100"}
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +580,167 @@ def test_build_pr_title_falls_back_to_run_id() -> None:
     ctx.workflow_payload = {}
     title = _build_pr_title(ctx)
     assert str(run_id) in title
+
+
+# ---------------------------------------------------------------------------
+# _create_project_repo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_project_repo_creates_public_repo() -> None:
+    ctx = MagicMock()
+    ctx.project_id = uuid.uuid4()
+    ctx.run_id = uuid.uuid4()
+    ctx.db = MagicMock()
+    ctx.db.flush = AsyncMock()
+
+    project = MagicMock()
+    project.github_repo_url = None
+
+    client = MagicMock()
+    client.get_authenticated_user = AsyncMock(return_value={"login": "RafeedIqbal"})
+    client.create_repo = AsyncMock(
+        return_value=RepoInfo(
+            name="id8-abc123",
+            full_name="RafeedIqbal/id8-abc123",
+            html_url="https://github.com/RafeedIqbal/id8-abc123",
+            clone_url="https://github.com/RafeedIqbal/id8-abc123.git",
+            private=False,
+            default_branch="main",
+        )
+    )
+
+    with patch("app.orchestrator.handlers.prepare_pr.emit_audit_event", new=AsyncMock()):
+        owner, repo_name = await _create_project_repo(ctx, client, project)
+
+    assert owner == "RafeedIqbal"
+    assert repo_name == "id8-abc123"
+    assert project.github_repo_url == "https://github.com/RafeedIqbal/id8-abc123"
+    assert client.create_repo.await_args.kwargs["private"] is False
+    ctx.db.flush.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _run_github_flow
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_github_flow_recreates_repo_when_stored_repo_missing() -> None:
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {"initial_prompt": "Create app"}
+    ctx.db = MagicMock()
+
+    project = MagicMock()
+    project.github_repo_url = "https://github.com/RafeedIqbal/id8-a22ad2deb369"
+
+    client = MagicMock()
+    client.push_files = AsyncMock(return_value="commit-sha")
+    client.poll_checks = AsyncMock(
+        return_value=[
+            CheckRun(
+                id=1,
+                name="ci/test",
+                status="completed",
+                conclusion="success",
+                html_url="https://github.com/RafeedIqbal/id8/actions/runs/1",
+            )
+        ]
+    )
+    client.merge_pull_request = AsyncMock(
+        return_value=MergeResult(sha="merge-sha", merged=True, message="merged")
+    )
+
+    pr_info = PrInfo(
+        number=11,
+        html_url="https://github.com/RafeedIqbal/id8-a22ad2deb369/pull/11",
+        state="open",
+        head_sha="head-sha",
+        title="feat(id8): Create app",
+    )
+
+    async def _fake_create_repo(*_args: Any, **_kwargs: Any) -> tuple[str, str]:
+        project.github_repo_url = "https://github.com/RafeedIqbal/id8-a22ad2deb369"
+        return "RafeedIqbal", "id8-a22ad2deb369"
+
+    with (
+        patch("app.orchestrator.handlers.prepare_pr._load_project", new=AsyncMock(return_value=project)),
+        patch(
+            "app.orchestrator.handlers.prepare_pr._create_project_repo",
+            new=AsyncMock(side_effect=_fake_create_repo),
+        ) as mock_create_repo,
+        patch(
+            "app.orchestrator.handlers.prepare_pr._ensure_branch",
+            new=AsyncMock(side_effect=[GitHubNotFoundError("missing"), "main"]),
+        ) as mock_ensure_branch,
+        patch("app.orchestrator.handlers.prepare_pr._find_closed_pull_request", new=AsyncMock(return_value=None)),
+        patch("app.orchestrator.handlers.prepare_pr._ensure_pull_request", new=AsyncMock(return_value=pr_info)),
+        patch("app.orchestrator.handlers.prepare_pr._persist_prepare_pr_metadata", new=AsyncMock()),
+        patch("app.orchestrator.handlers.prepare_pr.emit_audit_event", new=AsyncMock()),
+    ):
+        result = await _run_github_flow(
+            ctx,
+            client,
+            files=[{"path": "README.md", "content": "# generated"}],
+        )
+
+    assert result.outcome == "success"
+    assert mock_create_repo.await_count == 1
+    assert mock_ensure_branch.await_count == 2
+    assert result.context_updates is not None
+    assert result.context_updates["github_repo_url"] == "https://github.com/RafeedIqbal/id8-a22ad2deb369"
+    push_args = client.push_files.await_args.args
+    assert push_args[0] == "RafeedIqbal"
+    assert push_args[1] == "id8-a22ad2deb369"
+
+
+@pytest.mark.asyncio
+async def test_run_github_flow_continues_when_check_run_permissions_missing() -> None:
+    ctx = MagicMock()
+    ctx.run_id = uuid.uuid4()
+    ctx.project_id = uuid.uuid4()
+    ctx.workflow_payload = {"initial_prompt": "Create app"}
+    ctx.db = MagicMock()
+
+    project = MagicMock()
+    project.github_repo_url = "https://github.com/RafeedIqbal/id8-a22ad2deb369"
+
+    client = MagicMock()
+    client.push_files = AsyncMock(return_value="commit-sha")
+    client.poll_checks = AsyncMock(side_effect=GitHubAuthError("403 Forbidden"))
+    client.merge_pull_request = AsyncMock(
+        return_value=MergeResult(sha="merge-sha", merged=True, message="merged")
+    )
+
+    pr_info = PrInfo(
+        number=12,
+        html_url="https://github.com/RafeedIqbal/id8-a22ad2deb369/pull/12",
+        state="open",
+        head_sha="head-sha",
+        title="feat(id8): Create app",
+    )
+
+    with (
+        patch("app.orchestrator.handlers.prepare_pr._load_project", new=AsyncMock(return_value=project)),
+        patch("app.orchestrator.handlers.prepare_pr._ensure_branch", new=AsyncMock(return_value="main")),
+        patch("app.orchestrator.handlers.prepare_pr._find_closed_pull_request", new=AsyncMock(return_value=None)),
+        patch("app.orchestrator.handlers.prepare_pr._ensure_pull_request", new=AsyncMock(return_value=pr_info)),
+        patch("app.orchestrator.handlers.prepare_pr._persist_prepare_pr_metadata", new=AsyncMock()),
+        patch("app.orchestrator.handlers.prepare_pr.emit_audit_event", new=AsyncMock()),
+    ):
+        result = await _run_github_flow(
+            ctx,
+            client,
+            files=[{"path": "README.md", "content": "# generated"}],
+        )
+
+    assert result.outcome == "success"
+    client.merge_pull_request.assert_awaited_once()
+    assert result.context_updates is not None
+    assert result.context_updates["check_statuses"] == []
 
 
 # ---------------------------------------------------------------------------

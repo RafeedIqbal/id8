@@ -27,7 +27,10 @@ logger = logging.getLogger("id8.orchestrator.handlers.write_code")
 
 # How many times to retry when the LLM returns invalid JSON.
 _MAX_PARSE_RETRIES = 1
+_MAX_VALIDATION_REPAIR_ATTEMPTS = 1
 _GENERATION_PHASES = ("backend", "frontend", "config", "migrations")
+_MAX_REPAIR_CONTEXT_FILES = 40
+_MAX_REPAIR_FILE_CHARS = 4000
 _DEPENDENCY_MANIFESTS = (
     "package.json",
     "requirements.txt",
@@ -58,6 +61,40 @@ _TS_IMPORT_RE = re.compile(
     |require\(\s*['"]([^'"]+)['"]\s*\)
 """
 )
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+")
+
+_REPAIR_SYSTEM_PROMPT = """\
+You are fixing a generated code snapshot that failed static validation.
+
+Return ONLY valid JSON:
+{
+  "files": [
+    {"path": "relative/path.ext", "content": "full file contents", "language": "javascript"}
+  ]
+}
+
+Rules:
+1. Return only files that must be added or replaced to resolve validation errors.
+2. Preserve project architecture and existing file paths.
+3. Ensure JS/TS/Python syntax is valid.
+4. Ensure relative imports resolve to files in the snapshot (create missing files if required).
+5. Do not include secrets.
+"""
+
+_REPAIR_USER_PROMPT = """\
+Repair the generated code snapshot using the validation errors below.
+
+## Validation Errors (must fix all)
+{validation_errors}
+
+## Existing File Inventory
+{file_inventory}
+
+## Relevant Existing Files
+{file_context}
+
+Return ONLY JSON with a `files` array containing the corrected/new files.
+"""
 
 
 async def generate_with_fallback(*args: Any, **kwargs: Any) -> Any:
@@ -120,6 +157,7 @@ class WriteCodeHandler(NodeHandler):
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_estimated_cost_usd = 0.0
+        repair_attempted = False
 
         for phase in _GENERATION_PHASES:
             system_prompt, user_prompt = build_prompts(
@@ -187,6 +225,80 @@ class WriteCodeHandler(NodeHandler):
         # 6. Assemble and validate the full snapshot.
         snapshot_data = _assemble_code_snapshot(list(files_by_path.values()))
         validation_errors = _validate_code_snapshot(snapshot_data)
+        for _ in range(_MAX_VALIDATION_REPAIR_ATTEMPTS):
+            if not validation_errors:
+                break
+
+            repair_attempted = True
+            repair_system_prompt, repair_user_prompt = _build_validation_repair_prompts(
+                validation_errors=validation_errors,
+                files_by_path=files_by_path,
+            )
+            repair_files, repair_llm_response, repair_error = await _generate_chunk(
+                profile=profile,
+                node_name=f"{ctx.current_node}:repair",
+                phase="repair",
+                system_prompt=repair_system_prompt,
+                user_prompt=repair_user_prompt,
+            )
+            if repair_error:
+                remediation = "\n".join(f"- {err}" for err in validation_errors)
+                return NodeResult(
+                    outcome="failure",
+                    error=(
+                        "Code snapshot validation failed. Repair pass could not produce valid JSON.\n"
+                        f"Repair error: {repair_error}\n"
+                        "Remediation required:\n"
+                        + remediation
+                    ),
+                    context_updates={"validation_errors": validation_errors, "repair_attempted": True},
+                )
+            if not repair_files:
+                remediation = "\n".join(f"- {err}" for err in validation_errors)
+                return NodeResult(
+                    outcome="failure",
+                    error=(
+                        "Code snapshot validation failed. Repair pass returned no file updates.\n"
+                        "Remediation required:\n"
+                        + remediation
+                    ),
+                    context_updates={"validation_errors": validation_errors, "repair_attempted": True},
+                )
+
+            if repair_llm_response is not None:
+                last_llm_response = repair_llm_response
+                total_prompt_tokens += repair_llm_response.token_usage.prompt_tokens
+                total_completion_tokens += repair_llm_response.token_usage.completion_tokens
+                estimated_cost_usd = await emit_llm_usage_event(
+                    project_id=ctx.project_id,
+                    run_id=ctx.run_id,
+                    node=f"{ctx.current_node}:repair",
+                    model_profile=repair_llm_response.profile_used,
+                    model_id=repair_llm_response.model_id,
+                    prompt_tokens=repair_llm_response.token_usage.prompt_tokens,
+                    completion_tokens=repair_llm_response.token_usage.completion_tokens,
+                    db=ctx.db,
+                )
+                total_estimated_cost_usd += estimated_cost_usd
+
+            phase_file_counts["repair"] = 0
+            for item in repair_files:
+                path = str(item.get("path", "")).strip()
+                if not path:
+                    continue
+                normalized = {
+                    "path": path,
+                    "content": str(item.get("content", "")),
+                    "language": str(item.get("language", "text")),
+                }
+                existing = files_by_path.get(path)
+                if existing != normalized:
+                    files_by_path[path] = normalized
+                    phase_file_counts["repair"] += 1
+
+            snapshot_data = _assemble_code_snapshot(list(files_by_path.values()))
+            validation_errors = _validate_code_snapshot(snapshot_data)
+
         if validation_errors:
             remediation = "\n".join(f"- {err}" for err in validation_errors)
             logger.error(
@@ -197,7 +309,7 @@ class WriteCodeHandler(NodeHandler):
             return NodeResult(
                 outcome="failure",
                 error="Code snapshot validation failed. Remediation required:\n" + remediation,
-                context_updates={"validation_errors": validation_errors},
+                context_updates={"validation_errors": validation_errors, "repair_attempted": repair_attempted},
             )
 
         if last_llm_response is None:
@@ -215,6 +327,8 @@ class WriteCodeHandler(NodeHandler):
             ),
             "generation_phases": list(_GENERATION_PHASES),
             "phase_file_counts": phase_file_counts,
+            "repair_attempted": repair_attempted,
+            "repair_updates": phase_file_counts.get("repair", 0),
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
@@ -335,6 +449,82 @@ def _clean_artifact_content(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     return {k: v for k, v in raw.items() if not k.startswith("__")}
+
+
+def _build_validation_repair_prompts(
+    *,
+    validation_errors: list[str],
+    files_by_path: dict[str, dict[str, str]],
+) -> tuple[str, str]:
+    """Build prompts for a focused validation repair pass."""
+    all_paths = sorted(files_by_path.keys())
+    target_paths = _extract_paths_from_validation_errors(validation_errors)
+    selected_paths = [path for path in all_paths if path in target_paths]
+    if not selected_paths:
+        selected_paths = all_paths[:_MAX_REPAIR_CONTEXT_FILES]
+
+    # Keep context bounded to reduce token pressure.
+    selected_paths = selected_paths[:_MAX_REPAIR_CONTEXT_FILES]
+
+    file_context_parts: list[str] = []
+    for path in selected_paths:
+        file_data = files_by_path.get(path)
+        if not file_data:
+            continue
+        language = str(file_data.get("language", ""))
+        content = str(file_data.get("content", ""))
+        if len(content) > _MAX_REPAIR_FILE_CHARS:
+            content = (
+                content[:_MAX_REPAIR_FILE_CHARS]
+                + "\n# ...truncated for repair context..."
+            )
+        file_context_parts.append(f"### {path}\n```{language}\n{content}\n```")
+
+    if not file_context_parts:
+        file_context = "(no contextual files selected)"
+    else:
+        file_context = "\n\n".join(file_context_parts)
+
+    validation_text = "\n".join(f"- {err}" for err in validation_errors)
+    file_inventory = "\n".join(f"- {path}" for path in all_paths) if all_paths else "(none)"
+    user_prompt = _REPAIR_USER_PROMPT.format(
+        validation_errors=validation_text,
+        file_inventory=file_inventory,
+        file_context=file_context,
+    )
+    return _REPAIR_SYSTEM_PROMPT, user_prompt
+
+
+def _extract_paths_from_validation_errors(errors: list[str]) -> set[str]:
+    """Extract likely project file paths from validation error text."""
+    known_extensions = {
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".json",
+        ".sql",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".ini",
+        ".env",
+        ".md",
+        ".txt",
+        ".html",
+    }
+    paths: set[str] = set()
+    for error in errors:
+        for token in _PATH_TOKEN_RE.findall(error):
+            normalized = token.strip(" '\"")
+            if normalized.startswith("."):
+                continue
+            if "/" not in normalized:
+                continue
+            if any(normalized.endswith(ext) for ext in known_extensions):
+                paths.add(normalized)
+    return paths
 
 
 async def _load_source_artifact_references(ctx: RunContext) -> dict[str, dict[str, Any]]:
@@ -474,12 +664,27 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
         errors.append("Code snapshot contains files with missing/empty paths")
         return errors
 
+    has_python_files = any(path.endswith(".py") for path in file_paths)
+    has_frontend_assets = any(
+        path.endswith((".js", ".jsx", ".ts", ".tsx", ".html", ".vue", ".svelte"))
+        or "frontend/" in path
+        or path.startswith("src/")
+        for path in file_paths
+    )
+
     # Required files.
     entry_point = snapshot.get("entry_point", "")
     if not entry_point:
-        errors.append("Entry point is missing")
-    elif entry_point not in file_paths:
+        if has_python_files:
+            errors.append("Entry point is missing for backend Python runtime")
+        elif has_frontend_assets and not _has_frontend_entrypoint(file_paths):
+            errors.append("Frontend entry point is missing")
+    elif entry_point not in file_paths and has_python_files:
         errors.append(f"Entry point '{entry_point}' not found in generated files")
+    elif entry_point not in file_paths and has_frontend_assets and not _has_frontend_entrypoint(file_paths):
+        errors.append(
+            f"Entry point '{entry_point}' not found and no frontend runtime entry file detected"
+        )
 
     if not any(_is_dependency_manifest(path) for path in file_paths):
         errors.append("No dependency manifest found (package.json, requirements.txt, etc.)")
@@ -520,17 +725,47 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
 
 
 def _infer_entry_point(file_paths: list[str]) -> str:
+    path_set = set(file_paths)
+    has_python_files = any(path.endswith(".py") for path in path_set)
+
     for candidate in (
         "backend/app/main.py",
         "app/main.py",
         "backend/main.py",
         "main.py",
     ):
-        if candidate in file_paths:
+        if candidate in path_set:
             return candidate
     for path in file_paths:
         if path.endswith("/main.py"):
             return path
+
+    if has_python_files:
+        # Keep backend snapshots strict: Python services must include an
+        # executable main entrypoint.
+        return "backend/app/main.py"
+
+    for candidate in (
+        "frontend/src/main.tsx",
+        "frontend/src/main.jsx",
+        "frontend/src/pages/index.tsx",
+        "frontend/src/pages/index.jsx",
+        "frontend/src/app/page.tsx",
+        "frontend/src/app/page.jsx",
+        "src/main.tsx",
+        "src/main.jsx",
+        "src/pages/index.tsx",
+        "src/pages/index.jsx",
+        "src/app/page.tsx",
+        "src/app/page.jsx",
+        "frontend/index.html",
+        "index.html",
+    ):
+        if candidate in path_set:
+            return candidate
+
+    if file_paths:
+        return sorted(file_paths)[0]
     return "backend/app/main.py"
 
 
@@ -785,6 +1020,28 @@ def _check_jsts_imports(path: str, source: str, file_paths: set[str]) -> list[st
                 f"JS/TS import in {path} does not resolve in snapshot: '{spec}'"
             )
     return errors
+
+
+def _has_frontend_entrypoint(file_paths: set[str]) -> bool:
+    for candidate in (
+        "frontend/src/main.tsx",
+        "frontend/src/main.jsx",
+        "frontend/src/pages/index.tsx",
+        "frontend/src/pages/index.jsx",
+        "frontend/src/app/page.tsx",
+        "frontend/src/app/page.jsx",
+        "src/main.tsx",
+        "src/main.jsx",
+        "src/pages/index.tsx",
+        "src/pages/index.jsx",
+        "src/app/page.tsx",
+        "src/app/page.jsx",
+        "frontend/index.html",
+        "index.html",
+    ):
+        if candidate in file_paths:
+            return True
+    return False
 
 
 def _resolve_jsts_import(path: str, spec: str, file_paths: set[str]) -> bool:

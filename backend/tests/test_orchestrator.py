@@ -230,6 +230,12 @@ class TestTransitionTable:
     def test_resolve_next_node(self, node: str, outcome: str, expected: str) -> None:
         assert resolve_next_node(node, outcome) == expected
 
+    def test_resolve_next_node_normalizes_outcome_key(self) -> None:
+        assert resolve_next_node("WriteCode", " FAILURE ") == "EndFailed"
+
+    def test_resolve_next_node_allows_failed_failure_alias(self) -> None:
+        assert resolve_next_node("WriteCode", "failed") == "EndFailed"
+
 
 # ---------------------------------------------------------------------------
 # 2. Happy path — IngestPrompt → WaitPRDApproval (parks)
