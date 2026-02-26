@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Google Gemini
     gemini_api_key: str = ""
 
+    # Supabase Management API (for provisioning generated-app projects)
+    supabase_access_token: str = ""  # Personal access token for Management API
+    supabase_org_id: str = ""  # Organization ID to create projects under
+
     # GitHub
     github_token: str = ""
     github_app_id: str = ""

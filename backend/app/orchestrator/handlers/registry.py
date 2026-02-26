@@ -7,10 +7,10 @@ from app.orchestrator.handlers.generate_design import GenerateDesignHandler
 from app.orchestrator.handlers.generate_prd import GeneratePRDHandler
 from app.orchestrator.handlers.ingest_prompt import IngestPromptHandler
 from app.orchestrator.handlers.generate_tech_plan import GenerateTechPlanHandler
+from app.orchestrator.handlers.deploy_production import DeployProductionHandler
 from app.orchestrator.handlers.prepare_pr import PreparePRHandler
 from app.orchestrator.handlers.security_gate import SecurityGateHandler
 from app.orchestrator.handlers.stubs import (
-    DeployProductionHandler,
     EndFailedHandler,
     EndSuccessHandler,
 )
