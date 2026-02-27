@@ -44,16 +44,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("id8.orchestrator.engine")
 
 
-async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
+async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> bool:
     """Drive *run_id* through the state machine until it parks or terminates.
 
     This function is safe to call multiple times for the same run — it is
-    idempotent by design.
+    idempotent by design. Returns ``True`` when this call acquired processing
+    ownership for the run, else ``False`` when the run was locked or missing.
     """
     result = await db.execute(select(ProjectRun.id).where(ProjectRun.id == run_id))
     if result.scalar_one_or_none() is None:
         logger.error("Run %s not found — aborting", run_id)
-        return
+        return False
 
     logger.info("Orchestrator started for run=%s", run_id)
     workflow_payload: dict[str, Any] = {}
@@ -62,7 +63,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         run = await _lock_run_for_processing(run_id, db)
         if run is None:
             logger.info("Run %s is already being processed by another worker", run_id)
-            return
+            return False
 
         node_name = run.current_node
         try:
@@ -70,25 +71,25 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
         except ValueError:
             logger.error("Unknown node '%s' for run=%s — marking failed", node_name, run_id)
             await _transition_to_failed(run, f"Unknown node: {node_name}", db)
-            return
+            return True
         meta = NODE_REGISTRY.get(canonical_node)
 
         if meta is None:
             logger.error("Unknown node '%s' for run=%s — marking failed", node_name, run_id)
             await _transition_to_failed(run, f"Unknown node: {node_name}", db)
-            return
+            return True
 
         # ---- Terminal node ------------------------------------------------
         if meta.is_terminal:
             await _handle_terminal(run, node_name, db)
-            return
+            return True
 
         # ---- Lookup handler -----------------------------------------------
         handler = HANDLER_REGISTRY.get(node_name)
         if handler is None:
             logger.error("No handler for node '%s' — marking failed", node_name)
             await _transition_to_failed(run, f"No handler for node: {node_name}", db)
-            return
+            return True
 
         # ---- Idempotency check: skip if artifact already exists -----------
         existing_artifact = await _check_existing_artifact(run_id, node_name, db)
@@ -115,7 +116,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             except Exception:
                 logger.exception("Cannot resolve skip transition for node=%s", node_name)
                 await _transition_to_failed(run, f"Skip transition failed for {node_name}", db)
-                return
+                return True
             await _advance(run, next_node, db, outcome=outcome)
             continue
 
@@ -158,7 +159,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
                 minimum_delay_seconds=getattr(exc, "retry_after_seconds", None),
                 node_duration_ms=duration_ms,
             )
-            return
+            return True
         except Exception as exc:
             duration_ms = round((time.monotonic() - node_start) * 1000, 2)
             _warn_if_node_exceeds_slo(node_name, duration_ms, run_id)
@@ -181,7 +182,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             )
             logger.exception("Unhandled error in node=%s run=%s", node_name, run_id)
             await _transition_to_failed(run, f"{type(exc).__name__}: {exc}", db)
-            return
+            return True
 
         duration_ms = round((time.monotonic() - node_start) * 1000, 2)
         _warn_if_node_exceeds_slo(node_name, duration_ms, run_id)
@@ -203,7 +204,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             )
             logger.info("Run %s parked at wait node %s", run_id, node_name)
             await _update_project_status(run.project_id, node_name, db, run_id=run.id)
-            return
+            return True
 
         if node_result.context_updates:
             workflow_payload.update(node_result.context_updates)
@@ -239,7 +240,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             )
             logger.error("Invalid transition node=%s outcome=%s: %s", node_name, node_result.outcome, exc)
             await _transition_to_failed(run, str(exc), db)
-            return
+            return True
 
         completed_payload: dict[str, Any] = {
             "run_id": str(run.id),
@@ -276,7 +277,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> None:
             next_meta = None
         if next_meta is not None and next_meta.is_wait_node:
             logger.info("Run %s parked after entering wait node %s", run_id, next_node)
-            return
+            return True
 
 
 # ---------------------------------------------------------------------------

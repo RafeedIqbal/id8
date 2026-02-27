@@ -23,11 +23,6 @@ alembic upgrade head                                # Run migrations
 cd frontend && npm run dev                          # Dev server on :3000
 ```
 
-### Testing
-```bash
-# Frontend (no test suite yet — lint + typecheck only)
-cd frontend && npm run lint && npx tsc --noEmit
-```
 
 ### Linting
 ```bash
@@ -143,4 +138,4 @@ PostgreSQL 16 with 9 tables: `users`, `projects`, `project_runs`, `project_artif
 
 - **Native APIs** for production-critical paths: GitHub REST/GraphQL, Supabase management API, Vercel deployment API
 - **MCP adapters** (GitHub/Supabase/Vercel) are optional and feature-flagged, never default
-- **Stitch MCP** is the exception — it is first-class for design generation
+- **Stitch MCP**

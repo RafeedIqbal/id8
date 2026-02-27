@@ -30,10 +30,21 @@ async def _process_pending_runs(db: AsyncSession) -> int:
         for n, meta in NODE_REGISTRY.items()
         if meta.is_wait_node or meta.is_terminal
     ]
+    # If a retry job exists (scheduled now or in the future), the run should only be
+    # driven by the retry queue to honor backoff and avoid duplicate execution.
+    pending_retry_job_exists = (
+        select(RetryJob.id)
+        .where(
+            RetryJob.run_id == ProjectRun.id,
+            RetryJob.processed_at.is_(None),
+        )
+        .exists()
+    )
 
     result = await db.execute(
         select(ProjectRun).where(
             ProjectRun.current_node.notin_(wait_or_terminal_nodes),
+            ~pending_retry_job_exists,
         )
     )
     runs = result.scalars().all()
@@ -57,16 +68,20 @@ async def _process_retry_jobs(db: AsyncSession) -> int:
         select(RetryJob).where(
             RetryJob.scheduled_for <= now,
             RetryJob.processed_at.is_(None),
-        )
+        ).order_by(RetryJob.scheduled_for.asc())
     )
     jobs = result.scalars().all()
 
     for job in jobs:
         logger.info("Processing retry job=%s for run=%s node=%s", job.id, job.run_id, job.node_name)
         try:
-            await run_orchestrator(job.run_id, db)
-            job.processed_at = now
-            await db.commit()
+            acquired = await run_orchestrator(job.run_id, db)
+            if acquired:
+                job.processed_at = datetime.now(tz=UTC)
+                await db.commit()
+            else:
+                # Keep the retry job pending if another worker currently owns the run lock.
+                await db.rollback()
         except Exception:
             logger.exception("Error processing retry job=%s", job.id)
             await db.rollback()
@@ -79,8 +94,8 @@ async def main() -> None:
     while True:
         try:
             async with async_session() as db:
-                runs_processed = await _process_pending_runs(db)
                 retries_processed = await _process_retry_jobs(db)
+                runs_processed = await _process_pending_runs(db)
 
                 if runs_processed or retries_processed:
                     logger.info("Cycle complete: runs=%d retries=%d", runs_processed, retries_processed)
