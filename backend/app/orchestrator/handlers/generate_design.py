@@ -20,12 +20,12 @@ from app.design.base import (
     ScreenComponent,
     StitchAuthError,
 )
-from app.design.provider_factory import generate_with_fallback, regenerate_with_fallback
+from app.design.provider_factory import generate_design, regenerate_design
 from app.models.approval_event import ApprovalEvent
 from app.models.enums import ApprovalStage, ArtifactType, DesignProvider, ModelProfile
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
-from app.observability import emit_audit_event, emit_llm_usage_event
+from app.observability import emit_llm_usage_event
 from app.orchestrator.base import NodeHandler, NodeResult, RunContext
 
 logger = logging.getLogger("id8.orchestrator.handlers.generate_design")
@@ -50,7 +50,6 @@ class GenerateDesignHandler(NodeHandler):
         payload = ctx.workflow_payload or {}
         pending = _extract_pending_config(ctx.previous_artifacts)
         preferred_provider = payload.get("design_provider") or pending.get("provider") or DesignProvider.STITCH_MCP
-        preferred_provider_name = str(preferred_provider)
         raw_constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
         constraints = dict(raw_constraints) if isinstance(raw_constraints, dict) else {}
         if project.title.strip():
@@ -72,7 +71,7 @@ class GenerateDesignHandler(NodeHandler):
                         pending_feedback.get("target_component_id") or payload.get("target_component_id")
                     ),
                 )
-                output, provider_used = await regenerate_with_fallback(
+                output, provider_used = await regenerate_design(
                     previous=previous_design,
                     feedback=feedback,
                     auth=auth,
@@ -80,7 +79,7 @@ class GenerateDesignHandler(NodeHandler):
                 )
             else:
                 # Initial generation
-                output, provider_used = await generate_with_fallback(
+                output, provider_used = await generate_design(
                     prd_content=prd_content,
                     constraints=constraints,
                     auth=auth,
@@ -104,21 +103,6 @@ class GenerateDesignHandler(NodeHandler):
         design_codegen_context = artifact_data["__design_metadata"].get("design_codegen_context")
         if isinstance(design_codegen_context, dict):
             artifact_data["design_codegen_context"] = design_codegen_context
-        if preferred_provider_name == str(DesignProvider.STITCH_MCP) and str(provider_used) == str(
-            DesignProvider.INTERNAL_SPEC
-        ):
-            await emit_audit_event(
-                ctx.project_id,
-                None,
-                "design.provider_fallback",
-                {
-                    "run_id": str(ctx.run_id),
-                    "node": ctx.current_node,
-                    "from_provider": DesignProvider.STITCH_MCP,
-                    "to_provider": DesignProvider.INTERNAL_SPEC,
-                },
-                ctx.db,
-            )
 
         llm_meta = output.metadata or {}
         total_estimated_cost_usd = 0.0

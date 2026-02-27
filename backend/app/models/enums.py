@@ -5,7 +5,6 @@ import enum
 
 class DesignProvider(enum.StrEnum):
     STITCH_MCP = "stitch_mcp"
-    INTERNAL_SPEC = "internal_spec"
     MANUAL_UPLOAD = "manual_upload"
 
 

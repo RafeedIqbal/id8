@@ -17,13 +17,13 @@ from app.design.base import (
     ScreenComponent,
     StitchAuthError,
 )
-from app.design.provider_factory import regenerate_with_fallback
+from app.design.provider_factory import regenerate_design
 from app.design.stitch_mcp import STITCH_TOOLS
 from app.models.enums import ArtifactType, DesignProvider, ModelProfile, ProjectStatus
 from app.models.project import Project
 from app.models.project_artifact import ProjectArtifact
 from app.models.project_run import ProjectRun
-from app.observability import emit_audit_event, emit_llm_usage_event
+from app.observability import emit_llm_usage_event
 from app.schemas.artifact import ArtifactResponse, ProjectArtifactResponse
 from app.schemas.design import DesignFeedbackRequest, DesignGenerateRequest
 
@@ -107,7 +107,9 @@ def _design_output_from_content(content: dict[str, Any]) -> DesignOutput:
             Screen(
                 id=str(rs.get("id", "")),
                 name=str(rs.get("name", "")),
-                description=str(rs.get("description", "")),
+                description=str(
+                    rs.get("description", ""),
+                ),
                 components=components,
                 assets=rs.get("assets", []),
             )
@@ -267,7 +269,7 @@ async def submit_design_feedback(
     )
 
     try:
-        regenerated, provider_used = await regenerate_with_fallback(
+        regenerated, provider_used = await regenerate_design(
             previous=previous_design,
             feedback=feedback,
             auth=auth,
@@ -275,20 +277,6 @@ async def submit_design_feedback(
         )
     except StitchAuthError as exc:
         raise HTTPException(status_code=401, detail=exc.action_payload) from exc
-
-    if preferred_provider == DesignProvider.STITCH_MCP and str(provider_used) == str(DesignProvider.INTERNAL_SPEC):
-        await emit_audit_event(
-            project_id,
-            None,
-            "design.provider_fallback",
-            {
-                "run_id": str(run.id),
-                "node": "DesignFeedback",
-                "from_provider": DesignProvider.STITCH_MCP,
-                "to_provider": DesignProvider.INTERNAL_SPEC,
-            },
-            db,
-        )
 
     version = await _next_design_version(db, project_id)
     artifact_content = regenerated.to_dict()

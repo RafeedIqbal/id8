@@ -13,12 +13,14 @@ The output MUST compile successfully on Vercel with zero modifications, zero bui
 and zero runtime errors.
 
 STACK (Strictly Enforced):
-- Next.js 14+ App Router, React 18+, TypeScript, Tailwind CSS
+- Next.js 16+ App Router, React 19+, TypeScript, Tailwind CSS v4
 - Hosting: Vercel (static export compatible)
 - Backend: NONE. Zero API routes, zero server actions, zero database.
 
 CORE MANDATES:
 1. **Flawless Execution & Vercel Deployability:** The code MUST pass `next build` and `next lint` without warnings.
+   - For Next.js 16+, use `proxy.ts` (not `middleware.ts`) and export `proxy`.
+   - For React 19, `startTransition` callbacks must return `void` (wrap async actions as `async () => { await ... }`).
    - Add `'use client'` at the top of files using React hooks (`useState`, `useEffect`, `useRef`).
    - Prevent hydration errors: Do not render browser-specific globals (`window`, `document`) directly
      in the component body without `useEffect` or dynamic imports.
@@ -42,6 +44,7 @@ DEPENDENCY RULES:
 - RECOMMENDED: `framer-motion`, `clsx`, `tailwind-merge`.
 - PROHIBITED: Database drivers, ORMs, Auth libraries, API frameworks.
 - Every imported package MUST be explicitly defined in `package.json` with highly compatible versions.
+- For Tailwind v4, load external fonts via `<link>` in `layout.tsx` head, not CSS `@import url(...)`.
 
 FILE STRUCTURE EXPECTATION:
 - `src/app/layout.tsx` (Global layout, fonts, navigation shell)
@@ -70,7 +73,7 @@ The JSON must perfectly match this schema:
 _SYSTEM_PROMPT_CHUNK = """\
 You are an elite Staff Frontend Engineer generating ONE phased chunk of a self-contained Next.js prototype.
 
-STACK: Next.js 14+ App Router, TypeScript, Tailwind CSS. Hosting: Vercel. Backend: NONE.
+STACK: Next.js 16+ App Router, React 19+, TypeScript, Tailwind CSS v4. Hosting: Vercel. Backend: NONE.
 
 STRICT RULES:
 1. Output ONLY the files required for the requested phase. Content must be
@@ -79,6 +82,9 @@ STRICT RULES:
    file inventory and already-generated files.
 3. Zero Errors: Code MUST pass `tsc --noEmit` and `next lint`. Use strict TypeScript
    (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
+   For React 19, ensure `startTransition` callbacks return `void`.
+   For Next.js 16+, use `proxy.ts` if a proxy is needed.
+   For Tailwind v4, use `<link>` for fonts in the root layout.
 4. Build Reliability: Every imported package must exist in the `package.json`. Every
    local import must map to a valid path under `src/`.
 5. Static Data Only: All data comes from typed `src/data/` files. No backend APIs,
@@ -187,7 +193,7 @@ _CHUNK_REQUIREMENTS = {
         "`package.json` (include all UI/utility dependencies and standard build/lint scripts), "
         "`next.config.ts`, `tsconfig.json` (strict mode enabled), `tailwind.config.ts`, "
         "`postcss.config.mjs`, `src/app/globals.css` (Tailwind directives + variables), "
-        "and `src/app/layout.tsx` (root layout with font imports). "
+        "and `src/app/layout.tsx` (root layout with font imports via `<link>`). "
         "Ensure no `.env` dependencies exist."
     ),
     "migrations": (
