@@ -7,6 +7,7 @@ Provides a thin async wrapper around GitHub API v3 with:
 - Check run polling
 - Exponential backoff on rate limits
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -306,30 +307,22 @@ class GitHubClient:
 
     async def get_branch(self, owner: str, repo: str, branch: str) -> BranchRef:
         """Return the branch ref for *branch*.  Raises GitHubNotFoundError if absent."""
-        data = cast(dict[str, Any], await self._request(
-            "GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"
-        ))
+        data = cast(dict[str, Any], await self._request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"))
         sha: str = data["object"]["sha"]
         return BranchRef(name=branch, sha=sha)
 
-    async def create_branch(
-        self, owner: str, repo: str, base: str, branch_name: str
-    ) -> BranchRef:
+    async def create_branch(self, owner: str, repo: str, base: str, branch_name: str) -> BranchRef:
         """Create *branch_name* branching off *base*.
 
         Returns the new ref.  Raises GitHubConflictError if the branch already
         exists (caller should treat this as idempotent success).
         """
         # Resolve base ref SHA first
-        base_ref = cast(dict[str, Any], await self._request(
-            "GET", f"/repos/{owner}/{repo}/git/ref/heads/{base}"
-        ))
+        base_ref = cast(dict[str, Any], await self._request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{base}"))
         base_sha: str = base_ref["object"]["sha"]
 
         body: dict[str, Any] = {"ref": f"refs/heads/{branch_name}", "sha": base_sha}
-        data = cast(dict[str, Any], await self._request(
-            "POST", f"/repos/{owner}/{repo}/git/refs", body=body
-        ))
+        data = cast(dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/git/refs", body=body))
         sha: str = data["object"]["sha"]
         return BranchRef(name=branch_name, sha=sha)
 
@@ -361,15 +354,13 @@ class GitHubClient:
             )
 
         # 1. Get the current HEAD commit for the branch.
-        ref_data = cast(dict[str, Any], await self._request(
-            "GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"
-        ))
+        ref_data = cast(dict[str, Any], await self._request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}"))
         head_commit_sha: str = ref_data["object"]["sha"]
 
         # 2. Get the tree SHA of the current HEAD commit.
-        commit_data = cast(dict[str, Any], await self._request(
-            "GET", f"/repos/{owner}/{repo}/git/commits/{head_commit_sha}"
-        ))
+        commit_data = cast(
+            dict[str, Any], await self._request("GET", f"/repos/{owner}/{repo}/git/commits/{head_commit_sha}")
+        )
         base_tree_sha: str = commit_data["tree"]["sha"]
 
         # 3. Create a blob for each file.
@@ -381,9 +372,9 @@ class GitHubClient:
                 "content": base64.b64encode(content.encode()).decode(),
                 "encoding": "base64",
             }
-            blob_data = cast(dict[str, Any], await self._request(
-                "POST", f"/repos/{owner}/{repo}/git/blobs", body=blob_body
-            ))
+            blob_data = cast(
+                dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/git/blobs", body=blob_body)
+            )
             tree_entries.append(
                 {
                     "path": path,
@@ -398,9 +389,9 @@ class GitHubClient:
             "base_tree": base_tree_sha,
             "tree": tree_entries,
         }
-        tree_data = cast(dict[str, Any], await self._request(
-            "POST", f"/repos/{owner}/{repo}/git/trees", body=tree_body
-        ))
+        tree_data = cast(
+            dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/git/trees", body=tree_body)
+        )
         new_tree_sha: str = tree_data["sha"]
 
         # 5. Create a commit.
@@ -409,9 +400,9 @@ class GitHubClient:
             "tree": new_tree_sha,
             "parents": [head_commit_sha],
         }
-        new_commit = cast(dict[str, Any], await self._request(
-            "POST", f"/repos/{owner}/{repo}/git/commits", body=commit_body
-        ))
+        new_commit = cast(
+            dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/git/commits", body=commit_body)
+        )
         new_commit_sha: str = new_commit["sha"]
 
         # 6. Update the branch ref to point to the new commit.
@@ -450,9 +441,7 @@ class GitHubClient:
         params: dict[str, str] = {"state": state, "per_page": "100"}
         if head:
             params["head"] = head
-        data = cast(list[dict[str, Any]], await self._request(
-            "GET", f"/repos/{owner}/{repo}/pulls", params=params
-        ))
+        data = cast(list[dict[str, Any]], await self._request("GET", f"/repos/{owner}/{repo}/pulls", params=params))
         return [_pr_from_json(item) for item in data]
 
     async def create_pull_request(
@@ -472,9 +461,7 @@ class GitHubClient:
             "head": head,
             "base": base,
         }
-        data = cast(dict[str, Any], await self._request(
-            "POST", f"/repos/{owner}/{repo}/pulls", body=pr_body
-        ))
+        data = cast(dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/pulls", body=pr_body))
         return _pr_from_json(data)
 
     # ------------------------------------------------------------------
@@ -484,11 +471,14 @@ class GitHubClient:
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[CheckRun]:
         """Return all check runs for *ref* (commit SHA or branch name)."""
         ref_escaped = quote(ref, safe="")
-        data = cast(dict[str, Any], await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/commits/{ref_escaped}/check-runs",
-            params={"per_page": "100"},
-        ))
+        data = cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/commits/{ref_escaped}/check-runs",
+                params={"per_page": "100"},
+            ),
+        )
         return [_check_run_from_json(item) for item in data.get("check_runs", [])]
 
     async def poll_checks(
@@ -532,8 +522,7 @@ class GitHubClient:
             if remaining <= 0:
                 pending = [r.name for r in runs if r.status != "completed"]
                 raise GitHubChecksTimedOutError(
-                    f"Check runs timed out after {timeout:.0f}s; "
-                    f"still pending: {pending}",
+                    f"Check runs timed out after {timeout:.0f}s; still pending: {pending}",
                 )
 
             wait = min(interval, remaining)
@@ -560,9 +549,9 @@ class GitHubClient:
     ) -> MergeResult:
         """Merge *pr_number* using *method* (merge | squash | rebase)."""
         body: dict[str, Any] = {"merge_method": method}
-        data = cast(dict[str, Any], await self._request(
-            "PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", body=body
-        ))
+        data = cast(
+            dict[str, Any], await self._request("PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", body=body)
+        )
         return MergeResult(
             sha=data.get("sha", ""),
             merged=bool(data.get("merged", False)),

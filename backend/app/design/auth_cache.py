@@ -2,6 +2,7 @@
 
 Used to avoid persisting raw Stitch credentials in artifact content.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -35,10 +36,6 @@ def clear_cached_stitch_auth(run_id: uuid.UUID) -> None:
 
 def _purge_expired() -> None:
     now = datetime.now(tz=UTC)
-    expired_ids = [
-        run_id
-        for run_id, (_, cached_at) in _cache.items()
-        if now - cached_at > _AUTH_TTL
-    ]
+    expired_ids = [run_id for run_id, (_, cached_at) in _cache.items() if now - cached_at > _AUTH_TTL]
     for run_id in expired_ids:
         _cache.pop(run_id, None)

@@ -151,9 +151,7 @@ async def get_project(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> Project:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -169,9 +167,7 @@ async def delete_project(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> DeleteProjectResponse:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -195,9 +191,7 @@ async def delete_project(
     project.deleted_at = now
     project.updated_at = now
 
-    await emit_audit_event(
-        project_id, None, "project.deleted", {"deleted_at": now.isoformat()}, db
-    )
+    await emit_audit_event(project_id, None, "project.deleted", {"deleted_at": now.isoformat()}, db)
     await db.commit()
     await db.refresh(project)
 
@@ -214,9 +208,7 @@ async def update_project(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> Project:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -242,9 +234,7 @@ async def update_project(
         raise HTTPException(status_code=422, detail="No fields to update")
 
     project.updated_at = datetime.now(tz=UTC)
-    await emit_audit_event(
-        project_id, None, "project.updated", changes, db
-    )
+    await emit_audit_event(project_id, None, "project.updated", changes, db)
     await db.commit()
     await db.refresh(project)
     return project
@@ -261,9 +251,7 @@ async def restart_project(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> Project:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -336,9 +324,7 @@ async def get_project_metrics(
         raise HTTPException(status_code=404, detail="Project not found")
 
     events_result = await db.execute(
-        select(AuditEvent)
-        .where(AuditEvent.project_id == project_id)
-        .order_by(AuditEvent.created_at.asc())
+        select(AuditEvent).where(AuditEvent.project_id == project_id).order_by(AuditEvent.created_at.asc())
     )
     events = list(events_result.scalars().all())
 
@@ -351,9 +337,7 @@ async def get_project_metrics(
     run_usage: dict[uuid.UUID, dict[str, float]] = defaultdict(
         lambda: {"prompt_tokens": 0.0, "completion_tokens": 0.0, "estimated_cost_usd": 0.0}
     )
-    retry_by_node: dict[str, dict[str, float]] = defaultdict(
-        lambda: {"retry_count": 0.0, "retry_delay_ms": 0.0}
-    )
+    retry_by_node: dict[str, dict[str, float]] = defaultdict(lambda: {"retry_count": 0.0, "retry_delay_ms": 0.0})
     failure_reasons: Counter[str] = Counter()
 
     deploy_started = 0

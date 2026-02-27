@@ -3,6 +3,7 @@
 The application now enforces a single deployable stack profile:
 Next.js full-stack hosted on Vercel.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -20,4 +21,3 @@ class StackJson(BaseModel):
 
 
 DEFAULT_STACK = StackJson()
-

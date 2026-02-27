@@ -6,9 +6,11 @@ import json
 from typing import Any
 
 _SYSTEM_PROMPT_FULL = """\
-You are an elite Staff Frontend Engineer. Your objective is to generate a visually polished, flawless, and completely self-contained Next.js prototype. 
+You are an elite Staff Frontend Engineer. Your objective is to generate a visually polished,
+flawless, and completely self-contained Next.js prototype.
 
-The output MUST compile successfully on Vercel with zero modifications, zero build-time errors, and zero runtime errors.
+The output MUST compile successfully on Vercel with zero modifications, zero build-time errors,
+and zero runtime errors.
 
 STACK (Strictly Enforced):
 - Next.js 14+ App Router, React 18+, TypeScript, Tailwind CSS
@@ -16,16 +18,24 @@ STACK (Strictly Enforced):
 - Backend: NONE. Zero API routes, zero server actions, zero database.
 
 CORE MANDATES:
-1. **Flawless Execution & Vercel Deployability:** The code MUST pass `next build` and `next lint` without warnings. 
-   - Add `'use client'` at the top of files using React hooks (`useState`, `useEffect`, `useRef`), event listeners, or browser APIs.
-   - Prevent hydration errors: Do not render browser-specific globals (`window`, `document`) directly in the component body without `useEffect` or dynamic imports.
+1. **Flawless Execution & Vercel Deployability:** The code MUST pass `next build` and `next lint` without warnings.
+   - Add `'use client'` at the top of files using React hooks (`useState`, `useEffect`, `useRef`).
+   - Prevent hydration errors: Do not render browser-specific globals (`window`, `document`) directly
+     in the component body without `useEffect` or dynamic imports.
    - All imports MUST resolve perfectly. Do not import phantom packages.
-2. **Strict TypeScript:** No `any` types. Define comprehensive interfaces for all data structures in `src/types/`. 
-3. **Purely Visual Frontend:** All data must be hardcoded in typed `src/data/*.ts` files. Use realistic, rich mock data (5-15 items per entity, populated with ui-avatars.com URLs, realistic dates, etc.). NO `fetch()`, NO backend logic.
-4. **Interactive UI:** Client-side state must be fully implemented for filters, search, sorting, tabs, modals, and toggles using React hooks. State is in-memory only.
-5. **Routable Architecture:** Utilize Next.js App Router file-based routing. Every distinct screen must have a dedicated `page.tsx`. Include a persistent layout (sidebar or topnav) linking all routes.
-6. **Visual Polish & Responsiveness:** Use Tailwind CSS utilities for a cohesive design system (typography scales, consistent spacing, rounded corners, subtle shadows, hover/focus/active states). Ensure strictly mobile-first, responsive layouts.
-7. **Subtle Animations:** Include smooth transitions using CSS or Framer Motion for interactive elements (modals fading in, accordions expanding, dropdowns appearing).
+2. **Strict TypeScript:** No `any` types. Define comprehensive interfaces for all data structures in `src/types/`.
+3. **Purely Visual Frontend:** All data must be hardcoded in typed `src/data/*.ts` files. Use realistic,
+   rich mock data (5-15 items per entity, populated with ui-avatars.com URLs, realistic dates, etc.).
+   NO `fetch()`, NO backend logic.
+4. **Interactive UI:** Client-side state must be fully implemented for filters, search, sorting, tabs,
+   modals, and toggles using React hooks. State is in-memory only.
+5. **Routable Architecture:** Utilize Next.js App Router file-based routing. Every distinct screen
+   must have a dedicated `page.tsx`. Include a persistent layout (sidebar or topnav) linking all routes.
+6. **Visual Polish & Responsiveness:** Use Tailwind CSS utilities for a cohesive design system (typography
+   scales, consistent spacing, rounded corners, subtle shadows, hover/focus/active states).
+   Ensure strictly mobile-first, responsive layouts.
+7. **Subtle Animations:** Include smooth transitions using CSS or Framer Motion for interactive
+   elements (modals fading in, accordions expanding, dropdowns appearing).
 
 DEPENDENCY RULES:
 - MUST include: `next`, `react`, `react-dom`, `typescript`, `tailwindcss`, `@tailwindcss/postcss`, `lucide-react`.
@@ -43,9 +53,9 @@ FILE STRUCTURE EXPECTATION:
 - `src/lib/` (Utilities like `cn` class merger)
 
 OUTPUT FORMAT:
-Return a single, purely valid JSON object. 
-DO NOT wrap the response in Markdown formatting blocks (e.g., no ```json). 
-DO NOT include any conversational text or commentary. 
+Return a single, purely valid JSON object.
+DO NOT wrap the response in Markdown formatting blocks (e.g., no ```json).
+DO NOT include any conversational text or commentary.
 The JSON must perfectly match this schema:
 {
   "files": [
@@ -63,12 +73,18 @@ You are an elite Staff Frontend Engineer generating ONE phased chunk of a self-c
 STACK: Next.js 14+ App Router, TypeScript, Tailwind CSS. Hosting: Vercel. Backend: NONE.
 
 STRICT RULES:
-1. Output ONLY the files required for the requested phase. Content must be complete and production-ready.
-2. Ensure flawless integration. Keep imports completely consistent with the provided file inventory and already-generated files.
-3. Zero Errors: Code MUST pass `tsc --noEmit` and `next lint`. Use strict TypeScript (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
-4. Build Reliability: Every imported package must exist in the `package.json`. Every local import must map to a valid path under `src/`.
-5. Static Data Only: All data comes from typed `src/data/` files. No backend APIs, no server components fetching external data, no secrets.
-6. Polish & Interactivity: UI must be highly interactive (client-side state), fully responsive (mobile-first Tailwind), and visually refined (hover states, transitions).
+1. Output ONLY the files required for the requested phase. Content must be
+   complete and production-ready.
+2. Ensure flawless integration. Keep imports completely consistent with the provided
+   file inventory and already-generated files.
+3. Zero Errors: Code MUST pass `tsc --noEmit` and `next lint`. Use strict TypeScript
+   (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
+4. Build Reliability: Every imported package must exist in the `package.json`. Every
+   local import must map to a valid path under `src/`.
+5. Static Data Only: All data comes from typed `src/data/` files. No backend APIs,
+   no server components fetching external data, no secrets.
+6. Polish & Interactivity: UI must be highly interactive (client-side state), fully
+   responsive (mobile-first Tailwind), and visually refined (hover states, transitions).
 7. Match the provided design specifications with high fidelity.
 
 OUTPUT FORMAT:
@@ -145,17 +161,17 @@ Phase Requirements:
 
 CRITICAL EXECUTION STEPS:
 1. Generate ONLY the files for the **{chunk_label}** phase.
-2. Ensure all exports align with the existing file inventory. 
+2. Ensure all exports align with the existing file inventory.
 3. Verify that there are no TS errors, linting warnings, or missing dependencies.
 4. Return ONLY valid JSON containing the `files` array. No markdown, no backend code.
 """
 
 _CHUNK_REQUIREMENTS = {
-    "backend": (
+    "data_and_types": (
         "Generate strict TypeScript interfaces in `src/types/` and hardcoded dummy data arrays in `src/data/`. "
         "Include realistic, comprehensive mock data (5-15 items per entity) satisfying all UI states. "
-        "Add generic utility helpers in `src/lib/` (e.g., `cn` for Tailwind class merging using `clsx` and `tailwind-merge`, "
-        "date formatting, currency formatting). "
+        "Add generic utility helpers in `src/lib/` (e.g., `cn` for class merging using `clsx` and "
+        "`tailwind-merge`, date formatting). "
         "ABSOLUTELY NO API routes, server actions, or database logic."
     ),
     "frontend": (
@@ -169,11 +185,14 @@ _CHUNK_REQUIREMENTS = {
     "config": (
         "Create ironclad project configuration files guaranteeing a flawless Vercel deployment: "
         "`package.json` (include all UI/utility dependencies and standard build/lint scripts), "
-        "`next.config.ts`, `tsconfig.json` (strict mode enabled), `tailwind.config.ts`, `postcss.config.mjs`, "
-        "`src/app/globals.css` (Tailwind directives + variables), and `src/app/layout.tsx` (root layout with font imports). "
+        "`next.config.ts`, `tsconfig.json` (strict mode enabled), `tailwind.config.ts`, "
+        "`postcss.config.mjs`, `src/app/globals.css` (Tailwind directives + variables), "
+        "and `src/app/layout.tsx` (root layout with font imports). "
         "Ensure no `.env` dependencies exist."
     ),
-    "migrations": ("Return an empty files array. This is a purely static frontend prototype. Migrations are strictly prohibited."),
+    "migrations": (
+        "Return an empty files array. This is a purely static frontend prototype. Migrations are strictly prohibited."
+    ),
 }
 
 
@@ -297,7 +316,7 @@ def build_prompts(
             )
         return _SYSTEM_PROMPT_FULL, user_prompt
 
-    chunk_requirements = _CHUNK_REQUIREMENTS.get(chunk, _CHUNK_REQUIREMENTS["backend"])
+    chunk_requirements = _CHUNK_REQUIREMENTS.get(chunk, _CHUNK_REQUIREMENTS["data_and_types"])
     security_feedback_block = ""
     previous_code_block = ""
     if feedback:

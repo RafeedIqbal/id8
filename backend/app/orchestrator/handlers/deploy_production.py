@@ -11,6 +11,7 @@ granted:
   5. Update ``projects.live_deployment_url``.
   6. Return a ``deploy_report`` artifact (persisted by the engine).
 """
+
 from __future__ import annotations
 
 import logging

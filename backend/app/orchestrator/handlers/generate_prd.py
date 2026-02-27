@@ -4,6 +4,7 @@ Calls the LLM to produce a structured PRD artifact from the project's
 initial prompt.  On re-generation (after rejection) the prompt includes
 the rejection feedback and the previous PRD content so the model can revise.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,9 +42,7 @@ class GeneratePRDHandler(NodeHandler):
         from app.llm.router import resolve_profile
 
         # 1. Load project prompt
-        result = await ctx.db.execute(
-            select(Project).where(Project.id == ctx.project_id)
-        )
+        result = await ctx.db.execute(select(Project).where(Project.id == ctx.project_id))
         project = result.scalar_one_or_none()
         if project is None:
             return NodeResult(outcome="failure", error=f"Project {ctx.project_id} not found")

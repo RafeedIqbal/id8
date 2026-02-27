@@ -7,6 +7,7 @@ False-positive reduction: matches inside example/placeholder strings (e.g.
 ``your-api-key``, ``<SECRET>``, ``${ENV_VAR}``) are discarded, as are
 well-known documentation files (``.env.example``, ``README.md``).
 """
+
 from __future__ import annotations
 
 import logging

@@ -3,6 +3,7 @@
 Communicates with the Stitch MCP endpoint to generate and iterate on
 UI designs. Handles authentication, tool discovery, and error mapping.
 """
+
 from __future__ import annotations
 
 import json
@@ -142,18 +143,20 @@ class StitchMcpProvider(DesignProvider):
             project_id=project_id,
             seed_screen_ids=[screen.id for screen in output.screens],
         )
-        output.metadata.update({
-            "provider": "stitch_mcp",
-            "endpoint": _endpoint(),
-            "generation_time_ms": elapsed_ms,
-            "usable_tools": STITCH_TOOLS,
-            "stitch_project_id": project_id,
-            "stitch_project_url": _project_url(project_id),
-            "stitch_model_id": model_id,
-            "stitch_device_type": device_type,
-            "design_codegen_context": design_codegen_context,
-            **auth.redacted_summary(),
-        })
+        output.metadata.update(
+            {
+                "provider": "stitch_mcp",
+                "endpoint": _endpoint(),
+                "generation_time_ms": elapsed_ms,
+                "usable_tools": STITCH_TOOLS,
+                "stitch_project_id": project_id,
+                "stitch_project_url": _project_url(project_id),
+                "stitch_model_id": model_id,
+                "stitch_device_type": device_type,
+                "design_codegen_context": design_codegen_context,
+                **auth.redacted_summary(),
+            }
+        )
         return output
 
     async def regenerate(
@@ -203,21 +206,23 @@ class StitchMcpProvider(DesignProvider):
                 *[screen.id for screen in output.screens],
             ],
         )
-        output.metadata.update({
-            "provider": "stitch_mcp",
-            "endpoint": _endpoint(),
-            "generation_time_ms": elapsed_ms,
-            "feedback_text": feedback.feedback_text,
-            "usable_tools": STITCH_TOOLS,
-            "stitch_project_id": project_id,
-            "stitch_project_url": _project_url(project_id),
-            "stitch_model_id": model_id,
-            "stitch_device_type": device_type,
-            "stitch_edit_tool": tool,
-            "selected_screen_ids": selected_screen_ids,
-            "design_codegen_context": design_codegen_context,
-            **auth.redacted_summary(),
-        })
+        output.metadata.update(
+            {
+                "provider": "stitch_mcp",
+                "endpoint": _endpoint(),
+                "generation_time_ms": elapsed_ms,
+                "feedback_text": feedback.feedback_text,
+                "usable_tools": STITCH_TOOLS,
+                "stitch_project_id": project_id,
+                "stitch_project_url": _project_url(project_id),
+                "stitch_model_id": model_id,
+                "stitch_device_type": device_type,
+                "stitch_edit_tool": tool,
+                "selected_screen_ids": selected_screen_ids,
+                "design_codegen_context": design_codegen_context,
+                **auth.redacted_summary(),
+            }
+        )
         return output
 
     # -- internals ---------------------------------------------------------
@@ -231,9 +236,7 @@ class StitchMcpProvider(DesignProvider):
                 raise StitchAuthError("Stitch MCP API key is missing")
             return
         if not auth.oauth_token.strip() or not auth.goog_user_project.strip():
-            raise StitchAuthError(
-                "Stitch OAuth requires both oauth_access_token and X-Goog-User-Project"
-            )
+            raise StitchAuthError("Stitch OAuth requires both oauth_access_token and X-Goog-User-Project")
 
     async def _call_stitch(
         self,
@@ -280,9 +283,7 @@ class StitchMcpProvider(DesignProvider):
         if resp.status_code == 503:
             raise StitchRuntimeError("Stitch service unavailable (503)")
         if resp.status_code >= 400:
-            raise StitchRuntimeError(
-                f"Stitch MCP error: HTTP {resp.status_code} — {resp.text[:500]}"
-            )
+            raise StitchRuntimeError(f"Stitch MCP error: HTTP {resp.status_code} — {resp.text[:500]}")
 
         try:
             body = resp.json()
@@ -385,9 +386,7 @@ class StitchMcpProvider(DesignProvider):
                 ordered_ids.append(screen_id)
 
         summary_by_id = {
-            str(summary.get("id", "")).strip(): summary
-            for summary in summaries
-            if isinstance(summary, dict)
+            str(summary.get("id", "")).strip(): summary for summary in summaries if isinstance(summary, dict)
         }
 
         failed_screen_ids: list[str] = []
@@ -459,6 +458,7 @@ class StitchMcpProvider(DesignProvider):
 # Prompt builders
 # ---------------------------------------------------------------------------
 
+
 def _build_generation_prompt(prd_content: dict[str, Any], constraints: dict[str, Any]) -> str:
     """Translate an approved PRD into a Stitch-compatible generation prompt."""
     parts = [
@@ -518,6 +518,7 @@ def _build_regeneration_prompt(previous: DesignOutput, feedback: DesignFeedback)
 # ---------------------------------------------------------------------------
 # Response parser
 # ---------------------------------------------------------------------------
+
 
 def _project_name_from_prd(prd_content: dict[str, Any], preferred_title: str = "") -> str:
     cleaned_preferred = _clean_project_title(preferred_title)
@@ -834,7 +835,7 @@ def _extract_projects(raw: dict[str, Any]) -> list[dict[str, Any]]:
                     continue
                 try:
                     parsed = json.loads(text)
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     continue
                 from_value(parsed)
 
@@ -905,7 +906,7 @@ def _extract_raw_screen_objects(raw: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(text, str) and text.strip() and "{" in text:
             try:
                 parsed = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 return
             visit(parsed)
 
@@ -923,10 +924,7 @@ def _looks_like_screen(candidate: dict[str, Any]) -> bool:
 
     if isinstance(candidate.get("id"), str) and (
         isinstance(candidate.get("components"), list)
-        or any(
-            key in candidate
-            for key in ("assets", "prompt", "deviceType", "screenType", "width", "height")
-        )
+        or any(key in candidate for key in ("assets", "prompt", "deviceType", "screenType", "width", "height"))
     ):
         return True
 
@@ -1012,21 +1010,9 @@ def _extract_components(raw_screen: dict[str, Any]) -> list[ScreenComponent]:
     for idx, region in enumerate(raw_regions):
         if not isinstance(region, dict):
             continue
-        component_id = str(
-            region.get("id")
-            or region.get("componentId")
-            or f"comp-region-{idx + 1}"
-        )
-        component_name = str(
-            region.get("name")
-            or region.get("label")
-            or f"Component {idx + 1}"
-        )
-        component_type = str(
-            region.get("type")
-            or region.get("componentType")
-            or "region"
-        )
+        component_id = str(region.get("id") or region.get("componentId") or f"comp-region-{idx + 1}")
+        component_name = str(region.get("name") or region.get("label") or f"Component {idx + 1}")
+        component_type = str(region.get("type") or region.get("componentType") or "region")
         properties = {
             key: value
             for key, value in region.items()
@@ -1187,16 +1173,8 @@ def _extract_component_regions(raw_screen: dict[str, Any]) -> list[dict[str, Any
             continue
 
         region: dict[str, Any] = {
-            "id": str(
-                raw_region.get("id")
-                or raw_region.get("componentId")
-                or f"region-{index + 1}"
-            ),
-            "name": str(
-                raw_region.get("name")
-                or raw_region.get("label")
-                or f"Region {index + 1}"
-            ),
+            "id": str(raw_region.get("id") or raw_region.get("componentId") or f"region-{index + 1}"),
+            "name": str(raw_region.get("name") or raw_region.get("label") or f"Region {index + 1}"),
             "type": str(raw_region.get("type") or raw_region.get("componentType") or "region"),
         }
 
@@ -1254,26 +1232,14 @@ def _summary_to_codegen_context(summary: dict[str, Any], *, fallback_id: str) ->
         "id": screen_id,
         "name": str(summary.get("name", "")).strip() or screen_id or "Screen",
         "description": str(summary.get("description", "")).strip(),
-        "preview_images": [
-            value
-            for value in summary.get("preview_images", [])
-            if isinstance(value, str)
-        ][: _MAX_SCREEN_PREVIEWS],
-        "assets": [
-            value
-            for value in summary.get("assets", [])
-            if isinstance(value, str)
-        ][: _MAX_SCREEN_ASSETS],
-        "component_regions": [
-            value
-            for value in summary.get("component_regions", [])
-            if isinstance(value, dict)
-        ][: _MAX_COMPONENT_REGIONS],
-        "render_metadata": (
-            summary.get("render_metadata")
-            if isinstance(summary.get("render_metadata"), dict)
-            else {}
-        ),
+        "preview_images": [value for value in summary.get("preview_images", []) if isinstance(value, str)][
+            :_MAX_SCREEN_PREVIEWS
+        ],
+        "assets": [value for value in summary.get("assets", []) if isinstance(value, str)][:_MAX_SCREEN_ASSETS],
+        "component_regions": [value for value in summary.get("component_regions", []) if isinstance(value, dict)][
+            :_MAX_COMPONENT_REGIONS
+        ],
+        "render_metadata": (summary.get("render_metadata") if isinstance(summary.get("render_metadata"), dict) else {}),
     }
 
 
@@ -1309,7 +1275,7 @@ def _extract_suggestions(raw: dict[str, Any]) -> list[str]:
         if isinstance(text, str) and text.strip() and "{" in text:
             try:
                 parsed = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 return
             walk(parsed)
 

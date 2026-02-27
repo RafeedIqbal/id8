@@ -37,6 +37,4 @@ class ProjectRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
-    __table_args__ = (
-        Index("idx_runs_project_status", "project_id", "status", text("updated_at DESC")),
-    )
+    __table_args__ = (Index("idx_runs_project_status", "project_id", "status", text("updated_at DESC")),)

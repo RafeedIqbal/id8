@@ -6,6 +6,7 @@ through ``secret_filter``), deployment triggering, and status polling.
 Only publishable environment variables are ever set on Vercel projects.
 The ``secret_filter`` is applied before any API call that touches env vars.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -108,12 +109,10 @@ class VercelClient:
 
         for attempt in range(_MAX_RETRIES):
             async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.request(
-                    method, url, headers=self._headers(), json=body, params=all_params
-                )
+                resp = await http.request(method, url, headers=self._headers(), json=body, params=all_params)
 
             if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", 2.0 ** attempt))
+                retry_after = float(resp.headers.get("Retry-After", 2.0**attempt))
                 logger.warning("Vercel rate limit; retrying after %.0f s", retry_after)
                 await asyncio.sleep(retry_after)
                 continue

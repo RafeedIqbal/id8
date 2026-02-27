@@ -49,9 +49,7 @@ async def deploy_project(
     db: AsyncSession = Depends(get_db),
 ) -> DeploymentRecordResponse:
     # 1. Verify project exists.
-    project_result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    project_result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = project_result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -80,9 +78,7 @@ async def deploy_project(
     if idempotency_key:
         key_result = await db.execute(
             select(DeploymentRecord)
-            .where(
-                DeploymentRecord.provider_payload["idempotency_key"].astext == idempotency_key
-            )
+            .where(DeploymentRecord.provider_payload["idempotency_key"].astext == idempotency_key)
             .order_by(DeploymentRecord.created_at.desc())
             .limit(1)
         )
@@ -130,10 +126,7 @@ async def deploy_project(
     if run.current_node == NodeName.END_SUCCESS:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Run is at terminal node '{NodeName.END_SUCCESS}'; "
-                "deployment is already complete"
-            ),
+            detail=(f"Run is at terminal node '{NodeName.END_SUCCESS}'; deployment is already complete"),
         )
 
     # 5. Create a queued DeploymentRecord (idempotent — skip if already queued).

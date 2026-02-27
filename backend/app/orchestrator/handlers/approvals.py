@@ -4,6 +4,7 @@ A single handler class is used for all four HITL gates (PRD, Design,
 Tech Plan, Deploy).  It queries the most recent ``ApprovalEvent`` for
 the current run + stage and returns the appropriate outcome.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -17,7 +18,6 @@ from app.orchestrator.nodes import NodeName
 _WAIT_NODE_TO_STAGE: dict[str, ApprovalStage] = {
     NodeName.WAIT_PRD_APPROVAL: ApprovalStage.PRD,
     NodeName.WAIT_DESIGN_APPROVAL: ApprovalStage.DESIGN,
-    NodeName.WAIT_TECH_PLAN_APPROVAL: ApprovalStage.TECH_PLAN,
     NodeName.WAIT_DEPLOY_APPROVAL: ApprovalStage.DEPLOY,
 }
 

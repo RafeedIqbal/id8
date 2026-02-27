@@ -36,5 +36,6 @@ class ScreenSchema(BaseModel):
 
 class DesignOutputSchema(BaseModel):
     """Validates the design spec content produced by providers."""
+
     screens: list[ScreenSchema] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -7,6 +7,7 @@ subprocesses against a temp directory so the generated code is never executed.
 If either tool is not installed, the scanner logs a warning and returns an
 empty list so the gate degrades gracefully.
 """
+
 from __future__ import annotations
 
 import json
@@ -57,9 +58,7 @@ async def run_dependency_audit(files: list[dict[str, Any]]) -> list[SecurityFind
 # ---------------------------------------------------------------------------
 
 
-async def _audit_python_deps(
-    file_path: str, content: str, basename: str
-) -> list[SecurityFinding]:
+async def _audit_python_deps(file_path: str, content: str, basename: str) -> list[SecurityFinding]:
     with tempfile.TemporaryDirectory() as tmpdir:
         manifest = Path(tmpdir) / basename
         manifest.write_text(content, encoding="utf-8")
@@ -120,10 +119,7 @@ def _parse_pip_audit_output(output: str, file_path: str) -> list[SecurityFinding
                     severity="high",  # treat all known vulnerabilities as high
                     file_path=file_path,
                     line_number=0,
-                    message=(
-                        f"{pkg_name}=={pkg_version} has known vulnerability"
-                        f" {vuln_id}: {description}"
-                    ),
+                    message=(f"{pkg_name}=={pkg_version} has known vulnerability {vuln_id}: {description}"),
                     remediation=remediation,
                     resolved=False,
                 )
@@ -194,9 +190,7 @@ def _parse_npm_audit_output(output: str, file_path: str) -> list[SecurityFinding
             title = str(advisory.get("title", "Vulnerability"))
             fix_available = vuln_info.get("fixAvailable", False)
             remediation = (
-                "Run npm audit fix"
-                if fix_available
-                else "No automatic fix available — review and update manually"
+                "Run npm audit fix" if fix_available else "No automatic fix available — review and update manually"
             )
 
             findings.append(

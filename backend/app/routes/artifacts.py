@@ -24,9 +24,7 @@ async def list_artifacts(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
 

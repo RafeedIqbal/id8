@@ -3,6 +3,7 @@
 These return placeholder artifacts so the state machine can be exercised
 end-to-end.  Real implementations are introduced in later tasks (05-09).
 """
+
 from __future__ import annotations
 
 from app.models.enums import ArtifactType
@@ -44,7 +45,6 @@ class EndFailedHandler(NodeHandler):
 _NODE_TO_ARTIFACT_TYPE: dict[str, ArtifactType] = {
     "GeneratePRD": ArtifactType.PRD,
     "GenerateDesign": ArtifactType.DESIGN_SPEC,
-    "GenerateTechPlan": ArtifactType.TECH_PLAN,
     "WriteCode": ArtifactType.CODE_SNAPSHOT,
     "SecurityGate": ArtifactType.SECURITY_REPORT,
     "DeployProduction": ArtifactType.DEPLOY_REPORT,

@@ -3,6 +3,7 @@
 Normalized representation of findings from SAST, dependency audit, and
 secret scanning, plus the overall pass/fail verdict.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

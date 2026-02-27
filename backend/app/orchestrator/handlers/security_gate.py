@@ -8,6 +8,7 @@ a SecurityReportContent artifact and returns:
 * ``"failed"``  — one or more blocking findings → loop back to WriteCode with
                   findings attached to ``context_updates`` for remediation
 """
+
 from __future__ import annotations
 
 import logging
@@ -73,11 +74,7 @@ class SecurityGateHandler(NodeHandler):
         summary = _build_summary(all_findings)
 
         # 5. Determine pass/fail: any unresolved high/critical finding blocks.
-        blocking = [
-            f
-            for f in all_findings
-            if f.severity.lower() in _BLOCKING_SEVERITIES and not f.resolved
-        ]
+        blocking = [f for f in all_findings if f.severity.lower() in _BLOCKING_SEVERITIES and not f.resolved]
         passed = len(blocking) == 0
 
         logger.info(

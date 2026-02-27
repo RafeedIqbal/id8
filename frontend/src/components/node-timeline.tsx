@@ -1,44 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { LEGACY_TECH_PLAN_NODES, NODE_LABELS, PIPELINE_NODES } from "@/lib/constants";
+import { NODE_LABELS, PIPELINE_NODES } from "@/lib/constants";
 import type { RunTimelineEvent } from "@/types/domain";
 import { formatTime } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { getLatestAttemptTimeline, inferFailureNode } from "@/lib/run-failure";
 
 type NodeState = "completed" | "current" | "pending" | "failed";
-
-const LEGACY_PIPELINE_NODES = [
-  "IngestPrompt",
-  "GeneratePRD",
-  "WaitPRDApproval",
-  "GenerateDesign",
-  "WaitDesignApproval",
-  "GenerateTechPlan",
-  "WaitTechPlanApproval",
-  "WriteCode",
-  "SecurityGate",
-  "PreparePR",
-  "WaitDeployApproval",
-  "DeployProduction",
-  "EndSuccess",
-  "EndFailed",
-] as const;
-
-function usesLegacyTechPlanNodes(
-  currentNode: string | undefined,
-  timeline: RunTimelineEvent[]
-): boolean {
-  const legacySet = new Set<string>(LEGACY_TECH_PLAN_NODES);
-  if (currentNode && legacySet.has(currentNode)) return true;
-  for (const event of timeline) {
-    if (legacySet.has(event.toNode) || (event.fromNode && legacySet.has(event.fromNode))) {
-      return true;
-    }
-  }
-  return false;
-}
 
 function getNodeStates(
   pipelineNodes: readonly string[],
@@ -132,15 +101,8 @@ export function NodeTimeline({
 }) {
   const isFailed = status === "failed";
   const isTerminal = status === "failed" || status === "deployed";
+  const pipelineNodes = PIPELINE_NODES;
   const latestTimeline = useMemo(() => getLatestAttemptTimeline(timeline), [timeline]);
-  const pipelineNodes = useMemo(
-    () => (
-      usesLegacyTechPlanNodes(currentNode, latestTimeline)
-        ? LEGACY_PIPELINE_NODES
-        : PIPELINE_NODES
-    ),
-    [currentNode, latestTimeline]
-  );
   const failedNode = inferFailureNode(currentNode, latestTimeline, isFailed);
   const nodeStates = getNodeStates(
     pipelineNodes,

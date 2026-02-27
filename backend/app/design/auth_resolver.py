@@ -17,14 +17,10 @@ def get_default_stitch_auth() -> StitchAuthContext | None:
         )
 
     oauth_token = (
-        settings.stitch_mcp_oauth_token
-        or settings.stitch_access_token
-        or os.getenv("STITCH_ACCESS_TOKEN", "")
+        settings.stitch_mcp_oauth_token or settings.stitch_access_token or os.getenv("STITCH_ACCESS_TOKEN", "")
     ).strip()
     goog_user_project = (
-        settings.stitch_mcp_goog_user_project
-        or settings.google_cloud_project
-        or os.getenv("GOOGLE_CLOUD_PROJECT", "")
+        settings.stitch_mcp_goog_user_project or settings.google_cloud_project or os.getenv("GOOGLE_CLOUD_PROJECT", "")
     ).strip()
     if oauth_token and goog_user_project:
         return StitchAuthContext(

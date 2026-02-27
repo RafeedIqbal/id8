@@ -18,12 +18,6 @@ const ARTIFACT_ICONS: Record<ArtifactType, React.ReactNode> = {
       <path d="M3 9h18M9 9v12" strokeLinecap="round" />
     </svg>
   ),
-  tech_plan: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M4 6h16M4 12h16M4 18h8" strokeLinecap="round" />
-      <circle cx="18" cy="18" r="3" />
-    </svg>
-  ),
   code_snapshot: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />

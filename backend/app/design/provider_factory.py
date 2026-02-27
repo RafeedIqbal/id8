@@ -4,6 +4,7 @@ Default selection order: stitch_mcp -> internal_spec.
 On non-auth Stitch failures, automatically falls back to internal_spec
 with an audit log entry.
 """
+
 from __future__ import annotations
 
 import logging

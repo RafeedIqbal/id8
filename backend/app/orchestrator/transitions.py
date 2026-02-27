@@ -4,6 +4,7 @@ Encodes the full node graph from orchestration/state-machine.md as a flat
 dictionary.  Each key is a non-terminal NodeName, and the value is a mapping
 of outcome → next NodeName.
 """
+
 from __future__ import annotations
 
 from app.orchestrator.nodes import NodeName
@@ -18,8 +19,6 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
         "failure": NodeName.END_FAILED,
     },
     NodeName.WAIT_DESIGN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_DESIGN},
-    NodeName.GENERATE_TECH_PLAN: {"success": NodeName.WAIT_TECH_PLAN_APPROVAL, "failure": NodeName.END_FAILED},
-    NodeName.WAIT_TECH_PLAN_APPROVAL: {"approved": NodeName.WRITE_CODE, "rejected": NodeName.GENERATE_TECH_PLAN},
     NodeName.WRITE_CODE: {
         "success": NodeName.SECURITY_GATE,
         "failure": NodeName.END_FAILED,

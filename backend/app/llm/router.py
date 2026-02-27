@@ -4,6 +4,7 @@ Maps orchestrator node names to model profiles, and profiles to concrete
 Gemini model IDs.  The routing table is the single source of truth for
 which model each generation step uses.
 """
+
 from __future__ import annotations
 
 from app.models.enums import ModelProfile

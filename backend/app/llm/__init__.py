@@ -8,6 +8,7 @@ Public API
 - :func:`resolve_model` — map ``ModelProfile`` → Gemini model ID.
 - :func:`resolve_profile` — map orchestrator node → ``ModelProfile``.
 """
+
 from __future__ import annotations
 
 from app.llm.client import LlmResponse, TokenUsage, generate, generate_with_fallback

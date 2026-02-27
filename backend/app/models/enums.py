@@ -21,8 +21,6 @@ class ProjectStatus(enum.StrEnum):
     PRD_APPROVED = "prd_approved"
     DESIGN_DRAFT = "design_draft"
     DESIGN_APPROVED = "design_approved"
-    TECH_PLAN_DRAFT = "tech_plan_draft"
-    TECH_PLAN_APPROVED = "tech_plan_approved"
     CODEGEN = "codegen"
     SECURITY_GATE = "security_gate"
     DEPLOY_READY = "deploy_ready"
@@ -34,7 +32,6 @@ class ProjectStatus(enum.StrEnum):
 class ArtifactType(enum.StrEnum):
     PRD = "prd"
     DESIGN_SPEC = "design_spec"
-    TECH_PLAN = "tech_plan"
     CODE_SNAPSHOT = "code_snapshot"
     SECURITY_REPORT = "security_report"
     DEPLOY_REPORT = "deploy_report"
@@ -43,7 +40,6 @@ class ArtifactType(enum.StrEnum):
 class ApprovalStage(enum.StrEnum):
     PRD = "prd"
     DESIGN = "design"
-    TECH_PLAN = "tech_plan"
     DEPLOY = "deploy"
 
 

@@ -6,6 +6,7 @@ the full snapshot and runs static validation checks before artifact creation.
 When SecurityGate fails and loops back, unresolved high/critical findings are
 fed into generation as a remediation instruction.
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,7 +29,7 @@ logger = logging.getLogger("id8.orchestrator.handlers.write_code")
 # How many times to retry when the LLM returns invalid JSON.
 _MAX_PARSE_RETRIES = 1
 _MAX_VALIDATION_REPAIR_ATTEMPTS = 1
-_GENERATION_PHASES = ("backend", "frontend", "config", "migrations")
+_GENERATION_PHASES = ("data_and_types", "frontend", "config")
 _MAX_REPAIR_CONTEXT_FILES = 40
 _MAX_REPAIR_FILE_CHARS = 4000
 _DEPENDENCY_MANIFESTS = (
@@ -120,7 +121,6 @@ class WriteCodeHandler(NodeHandler):
             )
 
         prd = _clean_artifact_content(ctx.previous_artifacts.get("prd"))
-        legacy_tech_plan = _clean_artifact_content(ctx.previous_artifacts.get("tech_plan"))
 
         # 2. Check for security gate feedback (remediation loop).
         feedback = await _load_security_feedback(ctx)
@@ -131,15 +131,10 @@ class WriteCodeHandler(NodeHandler):
             "design_spec": design,
             "prd": prd,
         }
-        if legacy_tech_plan:
-            # Legacy runs may still contain a tech_plan artifact.
-            artifacts_for_prompt["tech_plan"] = legacy_tech_plan
 
         # Include previous code snapshot if we're in a remediation loop.
         if feedback:
-            code_snapshot = _clean_artifact_content(
-                ctx.previous_artifacts.get("code_snapshot")
-            )
+            code_snapshot = _clean_artifact_content(ctx.previous_artifacts.get("code_snapshot"))
             if code_snapshot:
                 artifacts_for_prompt["code_snapshot"] = code_snapshot
 
@@ -244,8 +239,7 @@ class WriteCodeHandler(NodeHandler):
                     error=(
                         "Code snapshot validation failed. Repair pass could not produce valid JSON.\n"
                         f"Repair error: {repair_error}\n"
-                        "Remediation required:\n"
-                        + remediation
+                        "Remediation required:\n" + remediation
                     ),
                     context_updates={"validation_errors": validation_errors, "repair_attempted": True},
                 )
@@ -255,8 +249,7 @@ class WriteCodeHandler(NodeHandler):
                     outcome="failure",
                     error=(
                         "Code snapshot validation failed. Repair pass returned no file updates.\n"
-                        "Remediation required:\n"
-                        + remediation
+                        "Remediation required:\n" + remediation
                     ),
                     context_updates={"validation_errors": validation_errors, "repair_attempted": True},
                 )
@@ -318,9 +311,7 @@ class WriteCodeHandler(NodeHandler):
             "source_artifacts": source_artifacts,
             "security_feedback": feedback or "",
             "file_count": len(snapshot_data.get("files", [])),
-            "total_loc": sum(
-                f.get("content", "").count("\n") + 1 for f in snapshot_data.get("files", [])
-            ),
+            "total_loc": sum(f.get("content", "").count("\n") + 1 for f in snapshot_data.get("files", [])),
             "generation_phases": list(_GENERATION_PHASES),
             "phase_file_counts": phase_file_counts,
             "repair_attempted": repair_attempted,
@@ -391,19 +382,10 @@ async def _load_security_feedback(ctx: RunContext) -> str | None:
             or finding.get("description")
             or "Untitled"
         )
-        detail = str(
-            finding.get("detail")
-            or finding.get("message")
-            or finding.get("description")
-            or ""
-        )
+        detail = str(finding.get("detail") or finding.get("message") or finding.get("description") or "")
         remediation = str(finding.get("remediation", "")).strip()
         if remediation:
-            detail = (
-                f"{detail} Remediation: {remediation}"
-                if detail
-                else f"Remediation: {remediation}"
-            )
+            detail = f"{detail} Remediation: {remediation}" if detail else f"Remediation: {remediation}"
 
         file_path = str(finding.get("file_path") or finding.get("file") or "")
         line = finding.get("line_number", finding.get("line", ""))
@@ -470,10 +452,7 @@ def _build_validation_repair_prompts(
         language = str(file_data.get("language", ""))
         content = str(file_data.get("content", ""))
         if len(content) > _MAX_REPAIR_FILE_CHARS:
-            content = (
-                content[:_MAX_REPAIR_FILE_CHARS]
-                + "\n# ...truncated for repair context..."
-            )
+            content = content[:_MAX_REPAIR_FILE_CHARS] + "\n# ...truncated for repair context..."
         file_context_parts.append(f"### {path}\n```{language}\n{content}\n```")
 
     if not file_context_parts:
@@ -530,7 +509,6 @@ async def _load_source_artifact_references(ctx: RunContext) -> dict[str, dict[st
     for key, artifact_type in (
         ("prd", ArtifactType.PRD),
         ("design_spec", ArtifactType.DESIGN_SPEC),
-        ("tech_plan", ArtifactType.TECH_PLAN),
     ):
         result = await ctx.db.execute(
             select(ProjectArtifact)
@@ -652,9 +630,7 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
         return errors
 
     file_paths = {
-        str(f.get("path", "")).strip()
-        for f in files
-        if isinstance(f, dict) and str(f.get("path", "")).strip()
+        str(f.get("path", "")).strip() for f in files if isinstance(f, dict) and str(f.get("path", "")).strip()
     }
     if not file_paths:
         errors.append("Code snapshot contains files with missing/empty paths")
@@ -679,9 +655,7 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
     if not entry_point and has_frontend_assets and not _has_frontend_entrypoint(file_paths):
         errors.append("Frontend entry point is missing")
     elif entry_point not in file_paths and has_frontend_assets and not _has_frontend_entrypoint(file_paths):
-        errors.append(
-            f"Entry point '{entry_point}' not found and no frontend runtime entry file detected"
-        )
+        errors.append(f"Entry point '{entry_point}' not found and no frontend runtime entry file detected")
 
     if not any(_is_dependency_manifest(path) for path in file_paths):
         errors.append("No dependency manifest found (package.json, requirements.txt, etc.)")
@@ -903,9 +877,7 @@ def _check_python_imports(
                 if _looks_like_local_python_module(module, known_top_modules) and not _python_module_exists(
                     module, file_paths
                 ):
-                    errors.append(
-                        f"Python import in {path} does not resolve in snapshot: '{module}'"
-                    )
+                    errors.append(f"Python import in {path} does not resolve in snapshot: '{module}'")
 
         if isinstance(node, ast.ImportFrom):
             if node.level > 0:
@@ -916,9 +888,7 @@ def _check_python_imports(
                 )
                 if not resolved or not _python_path_exists(resolved, file_paths):
                     target = "." * node.level + (node.module or "")
-                    errors.append(
-                        f"Relative Python import in {path} does not resolve in snapshot: '{target}'"
-                    )
+                    errors.append(f"Relative Python import in {path} does not resolve in snapshot: '{target}'")
                 continue
 
             module = node.module or ""
@@ -927,9 +897,7 @@ def _check_python_imports(
             if _looks_like_local_python_module(module, known_top_modules) and not _python_module_exists(
                 module, file_paths
             ):
-                errors.append(
-                    f"Python import in {path} does not resolve in snapshot: '{module}'"
-                )
+                errors.append(f"Python import in {path} does not resolve in snapshot: '{module}'")
 
     return errors
 
@@ -1086,9 +1054,7 @@ def _check_jsts_imports(path: str, source: str, file_paths: set[str]) -> list[st
         if not spec.startswith("."):
             continue
         if not _resolve_jsts_import(path, spec, file_paths):
-            errors.append(
-                f"JS/TS import in {path} does not resolve in snapshot: '{spec}'"
-            )
+            errors.append(f"JS/TS import in {path} does not resolve in snapshot: '{spec}'")
     return errors
 
 

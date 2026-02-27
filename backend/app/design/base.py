@@ -4,6 +4,7 @@ Defines the ``DesignProvider`` ABC, data models (``DesignOutput``,
 ``DesignFeedback``, ``StitchAuthContext``), and error types shared across
 all design provider implementations.
 """
+
 from __future__ import annotations
 
 import enum
@@ -15,6 +16,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Stitch auth
 # ---------------------------------------------------------------------------
+
 
 class StitchAuthMethod(enum.StrEnum):
     API_KEY = "api_key"
@@ -69,6 +71,7 @@ class StitchAuthContext:
 # ---------------------------------------------------------------------------
 # Design data models
 # ---------------------------------------------------------------------------
+
 
 @dataclass(slots=True)
 class ScreenComponent:
@@ -131,6 +134,7 @@ class DesignFeedback:
 # Errors
 # ---------------------------------------------------------------------------
 
+
 class DesignProviderError(Exception):
     """Base error raised by design providers."""
 
@@ -158,8 +162,7 @@ class StitchAuthError(DesignProviderError):
                 "Paste the generated API key into ID8",
             ],
             "fallback_note": (
-                "If API key entry is not supported in your environment, "
-                "you may use OAuth access token mode instead."
+                "If API key entry is not supported in your environment, you may use OAuth access token mode instead."
             ),
         }
 
@@ -171,6 +174,7 @@ class StitchRuntimeError(DesignProviderError):
 # ---------------------------------------------------------------------------
 # Abstract provider
 # ---------------------------------------------------------------------------
+
 
 class DesignProvider(ABC):
     """Contract for design generation providers."""

@@ -34,4 +34,3 @@ def resolve_github_auth(config: Settings = settings) -> GitHubAuth:
         )
 
     return GitHubAuth(mode="none")
-

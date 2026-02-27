@@ -3,6 +3,7 @@
 Used by the ``GenerateTechPlan`` handler to parse and validate the structured
 JSON produced by the model.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -24,21 +25,9 @@ class Dependency(BaseModel):
 class TechPlanContent(BaseModel):
     """Structured technical plan produced by the LLM."""
 
-    folder_structure: dict[str, Any] = Field(
-        ..., description="Directory tree for the project"
-    )
-    database_schema: dict[str, Any] = Field(
-        ..., description="Tables, columns, and relationships"
-    )
-    api_routes: list[ApiRoute] = Field(
-        ..., description="API endpoints with method, path, description"
-    )
-    component_hierarchy: dict[str, Any] = Field(
-        ..., description="Frontend component tree"
-    )
-    dependencies: list[Dependency] = Field(
-        ..., description="Packages with version constraints"
-    )
-    deployment_config: dict[str, Any] = Field(
-        ..., description="Infrastructure and deployment requirements"
-    )
+    folder_structure: dict[str, Any] = Field(..., description="Directory tree for the project")
+    database_schema: dict[str, Any] = Field(..., description="Tables, columns, and relationships")
+    api_routes: list[ApiRoute] = Field(..., description="API endpoints with method, path, description")
+    component_hierarchy: dict[str, Any] = Field(..., description="Frontend component tree")
+    dependencies: list[Dependency] = Field(..., description="Packages with version constraints")
+    deployment_config: dict[str, Any] = Field(..., description="Infrastructure and deployment requirements")

@@ -2,6 +2,7 @@
 
 Run as a standalone process via ``python -m app.worker``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,11 +26,7 @@ POLL_INTERVAL_SECONDS = 2
 
 async def _process_pending_runs(db: AsyncSession) -> int:
     """Find runs whose current_node is actionable (not wait, not terminal) and drive them."""
-    wait_or_terminal_nodes = [
-        n.value
-        for n, meta in NODE_REGISTRY.items()
-        if meta.is_wait_node or meta.is_terminal
-    ]
+    wait_or_terminal_nodes = [n.value for n, meta in NODE_REGISTRY.items() if meta.is_wait_node or meta.is_terminal]
     # If a retry job exists (scheduled now or in the future), the run should only be
     # driven by the retry queue to honor backoff and avoid duplicate execution.
     pending_retry_job_exists = (
@@ -65,10 +62,12 @@ async def _process_retry_jobs(db: AsyncSession) -> int:
     """Find due retry jobs and re-enter the orchestrator for each."""
     now = datetime.now(tz=UTC)
     result = await db.execute(
-        select(RetryJob).where(
+        select(RetryJob)
+        .where(
             RetryJob.scheduled_for <= now,
             RetryJob.processed_at.is_(None),
-        ).order_by(RetryJob.scheduled_for.asc())
+        )
+        .order_by(RetryJob.scheduled_for.asc())
     )
     jobs = result.scalars().all()
 

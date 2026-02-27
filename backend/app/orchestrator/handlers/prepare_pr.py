@@ -15,6 +15,7 @@ Drives the full GitHub integration for a run:
 Branch protection is respected by design — code is never pushed directly to
 the default branch.
 """
+
 from __future__ import annotations
 
 import logging
@@ -84,10 +85,7 @@ class PreparePRHandler(NodeHandler):
         if auth.mode == "none":
             return NodeResult(
                 outcome="failure",
-                error=(
-                    "No GitHub credentials configured. "
-                    "Set GITHUB_TOKEN or GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY."
-                ),
+                error=("No GitHub credentials configured. Set GITHUB_TOKEN or GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY."),
             )
 
         client = GitHubClient(auth)
@@ -507,9 +505,7 @@ async def _ensure_pull_request(
 ) -> Any:
     """Return an existing PR for this branch, or create a new one."""
     # Check for an existing open PR from this branch.
-    existing = await client.list_pull_requests(
-        owner, repo, head=f"{owner}:{branch_name}", state="open"
-    )
+    existing = await client.list_pull_requests(owner, repo, head=f"{owner}:{branch_name}", state="open")
     if existing:
         logger.info(
             "Found existing PR #%d for branch '%s' on %s/%s — reusing",

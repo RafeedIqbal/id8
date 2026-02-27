@@ -37,8 +37,6 @@ _NODE_PROGRESS_ORDER: tuple[NodeName, ...] = (
     NodeName.WAIT_PRD_APPROVAL,
     NodeName.GENERATE_DESIGN,
     NodeName.WAIT_DESIGN_APPROVAL,
-    NodeName.GENERATE_TECH_PLAN,
-    NodeName.WAIT_TECH_PLAN_APPROVAL,
     NodeName.WRITE_CODE,
     NodeName.SECURITY_GATE,
     NodeName.PREPARE_PR,
@@ -51,7 +49,6 @@ _NODE_PROGRESS_INDEX: dict[NodeName, int] = {node: idx for idx, node in enumerat
 _WAIT_NODE_TO_STAGE: dict[NodeName, ApprovalStage] = {
     NodeName.WAIT_PRD_APPROVAL: ApprovalStage.PRD,
     NodeName.WAIT_DESIGN_APPROVAL: ApprovalStage.DESIGN,
-    NodeName.WAIT_TECH_PLAN_APPROVAL: ApprovalStage.TECH_PLAN,
     NodeName.WAIT_DEPLOY_APPROVAL: ApprovalStage.DEPLOY,
 }
 _TIMELINE_EVENT_TYPES = (
@@ -368,10 +365,7 @@ def _is_run_terminal(run: ProjectRun) -> bool:
         node = NodeName(run.current_node)
     except ValueError:
         node = None
-    return (
-        run.status in _TERMINAL_RUN_STATUSES
-        or node in _TERMINAL_RUN_NODES
-    )
+    return run.status in _TERMINAL_RUN_STATUSES or node in _TERMINAL_RUN_NODES
 
 
 @router.get(
@@ -383,9 +377,7 @@ async def get_latest_run(
     project_id: uuid.UUID = Path(alias="projectId"),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectRunDetailResponse:
-    result = await db.execute(
-        select(Project.id).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project.id).where(Project.id == project_id, Project.deleted_at.is_(None)))
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -418,9 +410,7 @@ async def create_run(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectRun:
     # Check project exists
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -440,10 +430,7 @@ async def create_run(
         if previous_run is not None and _is_run_terminal(previous_run):
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    "Terminal runs require explicit replay_mode: "
-                    "retry_failed or replay_from_node"
-                ),
+                detail=("Terminal runs require explicit replay_mode: retry_failed or replay_from_node"),
             )
 
     # ── replay_from_node: Create NEW run at target node ──────────────────

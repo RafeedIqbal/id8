@@ -11,7 +11,6 @@ import type { ArtifactType, ProjectArtifact } from "@/types/domain";
 
 import { PrdViewer } from "@/components/artifact-viewers/prd-viewer";
 import { DesignViewer } from "@/components/artifact-viewers/design-viewer";
-import { TechPlanViewer } from "@/components/artifact-viewers/tech-plan-viewer";
 import { CodeViewer } from "@/components/artifact-viewers/code-viewer";
 import { SecurityViewer } from "@/components/artifact-viewers/security-viewer";
 import { DeployViewer } from "@/components/artifact-viewers/deploy-viewer";
@@ -20,7 +19,6 @@ import { RawJsonInspector } from "@/components/artifact-viewers/raw-json-inspect
 const VIEWERS: Record<ArtifactType, React.ComponentType<{ artifact: ProjectArtifact }>> = {
   prd: PrdViewer,
   design_spec: DesignViewer,
-  tech_plan: TechPlanViewer,
   code_snapshot: CodeViewer,
   security_report: SecurityViewer,
   deploy_report: DeployViewer,

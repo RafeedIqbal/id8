@@ -8,6 +8,7 @@ terminal node, or an unrecoverable error.
 Checkpointing is built-in: every transition writes ``current_node`` and
 ``updated_at`` to the database so the run can be resumed after a crash.
 """
+
 from __future__ import annotations
 
 import logging
@@ -273,7 +274,7 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> bool:
         # multiple times in the same orchestrator invocation.
         try:
             next_meta = NODE_REGISTRY[NodeName(next_node)]
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             next_meta = None
         if next_meta is not None and next_meta.is_wait_node:
             logger.info("Run %s parked after entering wait node %s", run_id, next_node)
@@ -297,7 +298,7 @@ async def _advance(
     run.current_node = next_node
     try:
         run.status = NODE_TO_PROJECT_STATUS[NodeName(next_node)]
-    except (KeyError, ValueError):
+    except KeyError, ValueError:
         logger.warning("No run-status mapping for node=%s", next_node)
     run.updated_at = datetime.now(tz=UTC)
     run.last_error_code = None
@@ -506,7 +507,7 @@ async def _update_project_status(
     """Set ``projects.status`` to match the current node."""
     try:
         target_status = NODE_TO_PROJECT_STATUS[NodeName(node_name)]
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         logger.warning("No ProjectStatus mapping for node=%s", node_name)
         return
 
@@ -555,9 +556,7 @@ async def _lock_run_for_processing(
     return result.scalar_one_or_none()
 
 
-async def _check_existing_artifact(
-    run_id: uuid.UUID, node_name: str, db: AsyncSession
-) -> ProjectArtifact | None:
+async def _check_existing_artifact(run_id: uuid.UUID, node_name: str, db: AsyncSession) -> ProjectArtifact | None:
     """Return an existing *successful* checkpoint artifact for (run_id, node_name).
 
     For DeployProduction we only treat an artifact as reusable when it
@@ -701,9 +700,7 @@ async def _load_previous_artifacts(
     db: AsyncSession,
 ) -> dict[str, Any]:
     result = await db.execute(
-        select(ProjectArtifact)
-        .where(ProjectArtifact.run_id == run_id)
-        .order_by(ProjectArtifact.created_at.desc())
+        select(ProjectArtifact).where(ProjectArtifact.run_id == run_id).order_by(ProjectArtifact.created_at.desc())
     )
     artifacts: dict[str, Any] = {}
     for artifact in result.scalars():

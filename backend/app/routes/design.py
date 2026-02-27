@@ -40,10 +40,7 @@ _DESIGN_VALID_STATUSES = {
 
 async def _latest_run(db: AsyncSession, project_id: uuid.UUID) -> ProjectRun:
     result = await db.execute(
-        select(ProjectRun)
-        .where(ProjectRun.project_id == project_id)
-        .order_by(ProjectRun.created_at.desc())
-        .limit(1)
+        select(ProjectRun).where(ProjectRun.project_id == project_id).order_by(ProjectRun.created_at.desc()).limit(1)
     )
     run = result.scalar_one_or_none()
     if not run:
@@ -143,9 +140,7 @@ async def generate_design(
     idempotency_key: str | None = Depends(get_idempotency_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -236,9 +231,7 @@ async def submit_design_feedback(
     idempotency_key: str | None = Depends(get_idempotency_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -283,10 +276,7 @@ async def submit_design_feedback(
     except StitchAuthError as exc:
         raise HTTPException(status_code=401, detail=exc.action_payload) from exc
 
-    if (
-        preferred_provider == DesignProvider.STITCH_MCP
-        and str(provider_used) == str(DesignProvider.INTERNAL_SPEC)
-    ):
+    if preferred_provider == DesignProvider.STITCH_MCP and str(provider_used) == str(DesignProvider.INTERNAL_SPEC):
         await emit_audit_event(
             project_id,
             None,

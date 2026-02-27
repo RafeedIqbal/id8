@@ -3,6 +3,7 @@
 Provides ``generate()`` for single-shot calls and
 ``generate_with_fallback()`` for automatic fallback retry logic.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -107,9 +108,7 @@ async def generate(
             timeout=max(0.1, float(settings.llm_request_timeout_seconds)),
         )
     except TimeoutError as exc:
-        raise RetryableError(
-            f"Gemini request timed out after {settings.llm_request_timeout_seconds}s"
-        ) from exc
+        raise RetryableError(f"Gemini request timed out after {settings.llm_request_timeout_seconds}s") from exc
     except genai_errors.APIError as exc:
         _handle_api_error(exc)
         raise  # unreachable — _handle_api_error always raises
@@ -125,9 +124,8 @@ async def generate(
             or getattr(usage_metadata, "input_token_count", None)
             or 0
         )
-        completion_tokens = (
-            getattr(usage_metadata, "candidates_token_count", None)
-            or getattr(usage_metadata, "output_token_count", None)
+        completion_tokens = getattr(usage_metadata, "candidates_token_count", None) or getattr(
+            usage_metadata, "output_token_count", None
         )
         if completion_tokens is None:
             total_tokens = getattr(usage_metadata, "total_token_count", None) or 0
@@ -252,11 +250,7 @@ def _reduce_prompt(prompt: str, *, max_chars: int = _REDUCED_PROMPT_MAX_CHARS) -
     # Keep both the beginning and end to preserve task context and constraints.
     head_chars = max_chars // 2
     tail_chars = max_chars - head_chars
-    return (
-        f"{prompt[:head_chars]}\n\n"
-        "[...prompt truncated for fallback retry...]\n\n"
-        f"{prompt[-tail_chars:]}"
-    )
+    return f"{prompt[:head_chars]}\n\n[...prompt truncated for fallback retry...]\n\n{prompt[-tail_chars:]}"
 
 
 def _parse_retry_after(raw_value: str | int | float) -> float | None:
@@ -275,7 +269,7 @@ def _parse_retry_after(raw_value: str | int | float) -> float | None:
 
     try:
         retry_at = parsedate_to_datetime(raw)
-    except (TypeError, ValueError, IndexError):
+    except TypeError, ValueError, IndexError:
         return None
 
     if retry_at.tzinfo is None:

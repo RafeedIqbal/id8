@@ -3,6 +3,7 @@
 Defines the 14 canonical nodes, their metadata, and the mapping from
 node → ProjectStatus so the engine can keep projects.status in sync.
 """
+
 from __future__ import annotations
 
 import enum
@@ -17,8 +18,6 @@ class NodeName(enum.StrEnum):
     WAIT_PRD_APPROVAL = "WaitPRDApproval"
     GENERATE_DESIGN = "GenerateDesign"
     WAIT_DESIGN_APPROVAL = "WaitDesignApproval"
-    GENERATE_TECH_PLAN = "GenerateTechPlan"
-    WAIT_TECH_PLAN_APPROVAL = "WaitTechPlanApproval"
     WRITE_CODE = "WriteCode"
     SECURITY_GATE = "SecurityGate"
     PREPARE_PR = "PreparePR"
@@ -68,17 +67,6 @@ NODE_REGISTRY: dict[NodeName, NodeMeta] = {
         next_on_failure=NodeName.GENERATE_DESIGN,
         is_wait_node=True,
     ),
-    NodeName.GENERATE_TECH_PLAN: NodeMeta(
-        NodeName.GENERATE_TECH_PLAN,
-        next_on_success=NodeName.WAIT_TECH_PLAN_APPROVAL,
-        next_on_failure=NodeName.END_FAILED,
-    ),
-    NodeName.WAIT_TECH_PLAN_APPROVAL: NodeMeta(
-        NodeName.WAIT_TECH_PLAN_APPROVAL,
-        next_on_success=NodeName.WRITE_CODE,
-        next_on_failure=NodeName.GENERATE_TECH_PLAN,
-        is_wait_node=True,
-    ),
     NodeName.WRITE_CODE: NodeMeta(
         NodeName.WRITE_CODE,
         next_on_success=NodeName.SECURITY_GATE,
@@ -119,8 +107,6 @@ NODE_TO_PROJECT_STATUS: dict[NodeName, ProjectStatus] = {
     NodeName.WAIT_PRD_APPROVAL: ProjectStatus.PRD_DRAFT,
     NodeName.GENERATE_DESIGN: ProjectStatus.DESIGN_DRAFT,
     NodeName.WAIT_DESIGN_APPROVAL: ProjectStatus.DESIGN_DRAFT,
-    NodeName.GENERATE_TECH_PLAN: ProjectStatus.TECH_PLAN_DRAFT,
-    NodeName.WAIT_TECH_PLAN_APPROVAL: ProjectStatus.TECH_PLAN_DRAFT,
     NodeName.WRITE_CODE: ProjectStatus.CODEGEN,
     NodeName.SECURITY_GATE: ProjectStatus.SECURITY_GATE,
     NodeName.PREPARE_PR: ProjectStatus.DEPLOY_READY,

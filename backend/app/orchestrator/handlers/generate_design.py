@@ -4,6 +4,7 @@ Generates a design specification via the design provider layer (Stitch MCP
 primary, internal_spec fallback).  On re-generation after rejection, loads
 feedback from the latest rejection event and calls provider.regenerate().
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,9 +36,7 @@ class GenerateDesignHandler(NodeHandler):
 
     async def execute(self, ctx: RunContext) -> NodeResult:
         # 1. Load project
-        result = await ctx.db.execute(
-            select(Project).where(Project.id == ctx.project_id)
-        )
+        result = await ctx.db.execute(select(Project).where(Project.id == ctx.project_id))
         project = result.scalar_one_or_none()
         if project is None:
             return NodeResult(outcome="failure", error=f"Project {ctx.project_id} not found")
@@ -50,11 +49,7 @@ class GenerateDesignHandler(NodeHandler):
         # 3. Extract provider preference and constraints.
         payload = ctx.workflow_payload or {}
         pending = _extract_pending_config(ctx.previous_artifacts)
-        preferred_provider = (
-            payload.get("design_provider")
-            or pending.get("provider")
-            or DesignProvider.STITCH_MCP
-        )
+        preferred_provider = payload.get("design_provider") or pending.get("provider") or DesignProvider.STITCH_MCP
         preferred_provider_name = str(preferred_provider)
         raw_constraints = payload.get("design_constraints") or pending.get("design_constraints", {})
         constraints = dict(raw_constraints) if isinstance(raw_constraints, dict) else {}
@@ -72,13 +67,9 @@ class GenerateDesignHandler(NodeHandler):
                 previous_design = await _load_previous_design(ctx)
                 feedback = DesignFeedback(
                     feedback_text=feedback_text,
-                    target_screen_id=(
-                        pending_feedback.get("target_screen_id")
-                        or payload.get("target_screen_id")
-                    ),
+                    target_screen_id=(pending_feedback.get("target_screen_id") or payload.get("target_screen_id")),
                     target_component_id=(
-                        pending_feedback.get("target_component_id")
-                        or payload.get("target_component_id")
+                        pending_feedback.get("target_component_id") or payload.get("target_component_id")
                     ),
                 )
                 output, provider_used = await regenerate_with_fallback(
@@ -113,9 +104,8 @@ class GenerateDesignHandler(NodeHandler):
         design_codegen_context = artifact_data["__design_metadata"].get("design_codegen_context")
         if isinstance(design_codegen_context, dict):
             artifact_data["design_codegen_context"] = design_codegen_context
-        if (
-            preferred_provider_name == str(DesignProvider.STITCH_MCP)
-            and str(provider_used) == str(DesignProvider.INTERNAL_SPEC)
+        if preferred_provider_name == str(DesignProvider.STITCH_MCP) and str(provider_used) == str(
+            DesignProvider.INTERNAL_SPEC
         ):
             await emit_audit_event(
                 ctx.project_id,
@@ -165,6 +155,7 @@ class GenerateDesignHandler(NodeHandler):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_prd_content(previous_artifacts: dict[str, Any]) -> dict[str, Any]:
     """Extract the PRD content from previous artifacts, stripping metadata."""
@@ -233,19 +224,23 @@ async def _load_previous_design(ctx: RunContext) -> DesignOutput:
         for rc in rs.get("components", []):
             if not isinstance(rc, dict):
                 continue
-            components.append(ScreenComponent(
-                id=rc.get("id", ""),
-                name=rc.get("name", ""),
-                type=rc.get("type", ""),
-                properties=rc.get("properties", {}),
-            ))
-        screens.append(Screen(
-            id=rs.get("id", ""),
-            name=rs.get("name", ""),
-            description=rs.get("description", ""),
-            components=components,
-            assets=rs.get("assets", []),
-        ))
+            components.append(
+                ScreenComponent(
+                    id=rc.get("id", ""),
+                    name=rc.get("name", ""),
+                    type=rc.get("type", ""),
+                    properties=rc.get("properties", {}),
+                )
+            )
+        screens.append(
+            Screen(
+                id=rs.get("id", ""),
+                name=rs.get("name", ""),
+                description=rs.get("description", ""),
+                components=components,
+                assets=rs.get("assets", []),
+            )
+        )
 
     return DesignOutput(screens=screens, metadata=metadata)
 

@@ -4,6 +4,7 @@ Loads the project's ``initial_prompt``, validates it is non-empty, and
 stores a ``prd_generation_payload`` in the run context for the downstream
 ``GeneratePRD`` node.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,9 +27,7 @@ class IngestPromptHandler(NodeHandler):
     """Extract and validate the user prompt from the project."""
 
     async def execute(self, ctx: RunContext) -> NodeResult:
-        result = await ctx.db.execute(
-            select(Project).where(Project.id == ctx.project_id)
-        )
+        result = await ctx.db.execute(select(Project).where(Project.id == ctx.project_id))
         project = result.scalar_one_or_none()
 
         if project is None:

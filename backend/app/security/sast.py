@@ -4,6 +4,7 @@ Uses bandit for Python SAST. Returns normalized SecurityFinding objects.
 If bandit is not installed the scanner logs a warning and returns an empty
 list so the gate degrades gracefully rather than blocking.
 """
+
 from __future__ import annotations
 
 import json
@@ -106,9 +107,7 @@ def _parse_bandit_output(output: str, tmpdir: str) -> list[SecurityFinding]:
     findings: list[SecurityFinding] = []
 
     for issue in data.get("results", []):
-        severity = _SEVERITY_MAP.get(
-            str(issue.get("issue_severity", "")).upper(), "low"
-        )
+        severity = _SEVERITY_MAP.get(str(issue.get("issue_severity", "")).upper(), "low")
         raw_path = str(issue.get("filename", ""))
         file_path = raw_path.removeprefix(prefix)
 
@@ -119,9 +118,7 @@ def _parse_bandit_output(output: str, tmpdir: str) -> list[SecurityFinding]:
                 file_path=file_path,
                 line_number=int(issue.get("line_number", 0)),
                 message=str(issue.get("issue_text", "")),
-                remediation=str(
-                    issue.get("more_info", "See bandit documentation for details")
-                ),
+                remediation=str(issue.get("more_info", "See bandit documentation for details")),
                 resolved=False,
             )
         )

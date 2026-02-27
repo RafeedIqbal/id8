@@ -11,7 +11,6 @@ import type { ApprovalStage, ArtifactType, ProjectArtifact } from "@/types/domai
 
 import { PrdViewer } from "@/components/artifact-viewers/prd-viewer";
 import { DesignViewer } from "@/components/artifact-viewers/design-viewer";
-import { TechPlanViewer } from "@/components/artifact-viewers/tech-plan-viewer";
 import { DeployViewer } from "@/components/artifact-viewers/deploy-viewer";
 import { SecurityViewer } from "@/components/artifact-viewers/security-viewer";
 import { CodeViewer } from "@/components/artifact-viewers/code-viewer";
@@ -19,7 +18,6 @@ import { CodeViewer } from "@/components/artifact-viewers/code-viewer";
 const STAGE_TO_ARTIFACT: Record<ApprovalStage, ArtifactType> = {
   prd: "prd",
   design: "design_spec",
-  tech_plan: "tech_plan",
   // Deploy approval happens before DeployProduction generates deploy_report.
   deploy: "code_snapshot",
 };
@@ -334,8 +332,8 @@ export default function ApprovalPage({
   // If deploy approval, also show security report
   const securityArtifact = approvalStage === "deploy"
     ? (artifactsData?.items ?? [])
-        .filter((a) => a.artifactType === "security_report")
-        .sort((a, b) => b.version - a.version)[0]
+      .filter((a) => a.artifactType === "security_report")
+      .sort((a, b) => b.version - a.version)[0]
     : null;
 
   return (
@@ -392,7 +390,6 @@ export default function ApprovalPage({
 
                 {artifactType === "prd" && <PrdViewer artifact={artifact} />}
                 {artifactType === "design_spec" && <DesignViewer artifact={artifact} />}
-                {artifactType === "tech_plan" && <TechPlanViewer artifact={artifact} />}
                 {artifactType === "code_snapshot" && <CodeViewer artifact={artifact} />}
                 {artifactType === "deploy_report" && <DeployViewer artifact={artifact} />}
               </div>

@@ -11,6 +11,7 @@ The only variables that belong in a frontend runtime are publishable ones —
 those prefixed with ``NEXT_PUBLIC_`` or ``PUBLIC_``.  Everything else is
 backend-only and must never be injected.
 """
+
 from __future__ import annotations
 
 import logging

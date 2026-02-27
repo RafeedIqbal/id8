@@ -3,6 +3,7 @@
 Used by the ``WriteCode`` handler to parse and validate the structured
 JSON produced by the model.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

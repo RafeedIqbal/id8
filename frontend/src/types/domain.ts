@@ -8,8 +8,6 @@ export type ProjectStatus =
   | "prd_approved"
   | "design_draft"
   | "design_approved"
-  | "tech_plan_draft"
-  | "tech_plan_approved"
   | "codegen"
   | "security_gate"
   | "deploy_ready"
@@ -17,12 +15,11 @@ export type ProjectStatus =
   | "deployed"
   | "failed";
 
-export type ApprovalStage = "prd" | "design" | "tech_plan" | "deploy";
+export type ApprovalStage = "prd" | "design" | "deploy";
 
 export type ArtifactType =
   | "prd"
   | "design_spec"
-  | "tech_plan"
   | "code_snapshot"
   | "security_report"
   | "deploy_report";

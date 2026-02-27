@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 _STAGE_TO_VALID_STATUS: dict[ApprovalStage, ProjectStatus] = {
     ApprovalStage.PRD: ProjectStatus.PRD_DRAFT,
     ApprovalStage.DESIGN: ProjectStatus.DESIGN_DRAFT,
-    ApprovalStage.TECH_PLAN: ProjectStatus.TECH_PLAN_DRAFT,
     ApprovalStage.DEPLOY: ProjectStatus.DEPLOY_READY,
 }
 
@@ -32,19 +31,16 @@ _STAGE_TO_VALID_STATUS: dict[ApprovalStage, ProjectStatus] = {
 _STAGE_TO_APPROVED_STATUS: dict[ApprovalStage, ProjectStatus] = {
     ApprovalStage.PRD: ProjectStatus.PRD_APPROVED,
     ApprovalStage.DESIGN: ProjectStatus.DESIGN_APPROVED,
-    ApprovalStage.TECH_PLAN: ProjectStatus.TECH_PLAN_APPROVED,
     ApprovalStage.DEPLOY: ProjectStatus.DEPLOYING,
 }
 _STAGE_TO_WAIT_NODE: dict[ApprovalStage, NodeName] = {
     ApprovalStage.PRD: NodeName.WAIT_PRD_APPROVAL,
     ApprovalStage.DESIGN: NodeName.WAIT_DESIGN_APPROVAL,
-    ApprovalStage.TECH_PLAN: NodeName.WAIT_TECH_PLAN_APPROVAL,
     ApprovalStage.DEPLOY: NodeName.WAIT_DEPLOY_APPROVAL,
 }
 _STAGE_TO_ARTIFACT_TYPE: dict[ApprovalStage, ArtifactType] = {
     ApprovalStage.PRD: ArtifactType.PRD,
     ApprovalStage.DESIGN: ArtifactType.DESIGN_SPEC,
-    ApprovalStage.TECH_PLAN: ArtifactType.TECH_PLAN,
     ApprovalStage.DEPLOY: ArtifactType.CODE_SNAPSHOT,
 }
 
@@ -72,9 +68,7 @@ async def submit_approval(
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalEvent:
     # Load project
-    project_result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    project_result = await db.execute(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     project = project_result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -99,8 +93,7 @@ async def submit_approval(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Run is at node {run.current_node}; {body.stage} approvals are only valid at "
-                f"{expected_wait_node}"
+                f"Run is at node {run.current_node}; {body.stage} approvals are only valid at {expected_wait_node}"
             ),
         )
 
