@@ -14,6 +14,9 @@ import json
 import logging
 import posixpath
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -32,6 +35,7 @@ _MAX_VALIDATION_REPAIR_ATTEMPTS = 1
 _GENERATION_PHASES = ("shared_foundation", "pages")
 _MAX_REPAIR_CONTEXT_FILES = 40
 _MAX_REPAIR_FILE_CHARS = 4000
+_NPM_LOCKFILE_TIMEOUT_SECONDS = 180
 _DEPENDENCY_MANIFESTS = (
     "package.json",
     "requirements.txt",
@@ -139,8 +143,25 @@ class WriteCodeHandler(NodeHandler):
 
         prd = _clean_artifact_content(ctx.previous_artifacts.get("prd"))
 
-        # 2. Check for security gate feedback (remediation loop).
+        # 2. Check for security gate feedback (remediation loop) or validation feedback
         feedback = await _load_security_feedback(ctx)
+
+        validation_errors_from_prev = []
+        code_snapshot = _clean_artifact_content(ctx.previous_artifacts.get("code_snapshot"))
+        if code_snapshot:
+            meta = code_snapshot.get("__code_metadata", {})
+            validation_errors_from_prev = meta.get("validation_errors", [])
+            if validation_errors_from_prev:
+                val_text = "\n".join(f"- {err}" for err in validation_errors_from_prev)
+                val_feedback = f"Previous code snapshot validation failed with the following errors:\n{val_text}"
+                feedback = f"{feedback}\n\n{val_feedback}" if feedback else val_feedback
+
+        validation_loop_count = int(ctx.workflow_payload.get("validation_loop_count", 0))
+        if validation_errors_from_prev and validation_loop_count >= 2:
+            return NodeResult(
+                outcome="failure",
+                error="Exceeded maximum validation repair loops (2 attempts).",
+            )
 
         # 3. Build generation context.
         profile = resolve_profile(ctx.current_node)
@@ -149,11 +170,9 @@ class WriteCodeHandler(NodeHandler):
             "prd": prd,
         }
 
-        # Include previous code snapshot if we're in a remediation loop.
-        if feedback:
-            code_snapshot = _clean_artifact_content(ctx.previous_artifacts.get("code_snapshot"))
-            if code_snapshot:
-                artifacts_for_prompt["code_snapshot"] = code_snapshot
+        # Include previous code snapshot if we're in a remediation or validation loop.
+        if feedback and code_snapshot:
+            artifacts_for_prompt["code_snapshot"] = code_snapshot
 
         # 4. Capture artifact lineage.
         source_artifacts = await _load_source_artifact_references(ctx)
@@ -272,9 +291,10 @@ class WriteCodeHandler(NodeHandler):
                 error=f"Template merge failed: {e}",
             )
 
+        merged_files, dependency_resolution_errors = _materialize_npm_lockfile(merged_files)
         merged_files_dict = {f.path: f.model_dump() for f in merged_files}
         snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
-        validation_errors = _validate_code_snapshot(snapshot_data)
+        validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
         for _ in range(_MAX_VALIDATION_REPAIR_ATTEMPTS):
             if not validation_errors:
                 break
@@ -358,9 +378,10 @@ class WriteCodeHandler(NodeHandler):
                     context_updates={"validation_errors": validation_errors, "repair_attempted": True},
                 )
 
+            merged_files, dependency_resolution_errors = _materialize_npm_lockfile(merged_files)
             merged_files_dict = {f.path: f.model_dump() for f in merged_files}
             snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
-            validation_errors = _validate_code_snapshot(snapshot_data)
+            validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
 
         if validation_errors:
             remediation = "\n".join(f"- {err}" for err in validation_errors)
@@ -369,10 +390,20 @@ class WriteCodeHandler(NodeHandler):
                 ctx.project_id,
                 "; ".join(validation_errors),
             )
+
+            # Persist the snapshot even though it's invalid, so the next loop can read the errors and code.
+            snapshot_data["__code_metadata"] = {
+                "validation_errors": validation_errors,
+            }
             return NodeResult(
-                outcome="failure",
+                outcome="failed",
                 error="Code snapshot validation failed. Remediation required:\n" + remediation,
-                context_updates={"validation_errors": validation_errors, "repair_attempted": repair_attempted},
+                artifact_data=snapshot_data,  # Return it so orchestrator saves the intermediate state
+                context_updates={
+                    "validation_errors": validation_errors,
+                    "repair_attempted": repair_attempted,
+                    "validation_loop_count": validation_loop_count + 1,
+                },
             )
 
         if last_llm_response is None:
@@ -705,6 +736,80 @@ def _assemble_code_snapshot(files: list[dict[str, str]]) -> dict[str, Any]:
     return snapshot.model_dump(by_alias=True)
 
 
+def _materialize_npm_lockfile(files: list[Any]) -> tuple[list[Any], list[str]]:
+    """Resolve npm dependencies and attach a deterministic package-lock.json when possible."""
+    package_file = next((file for file in files if getattr(file, "path", "") == "package.json"), None)
+    if package_file is None:
+        return files, []
+
+    try:
+        json.loads(package_file.content)
+    except json.JSONDecodeError as exc:
+        return files, [f"package.json is not valid JSON: {exc.msg}"]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "package.json").write_text(package_file.content, encoding="utf-8")
+
+        try:
+            result = subprocess.run(  # noqa: S603
+                [
+                    "npm",
+                    "install",
+                    "--package-lock-only",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_NPM_LOCKFILE_TIMEOUT_SECONDS,
+                cwd=tmpdir,
+            )
+        except FileNotFoundError:
+            return files, ["npm is required to verify Vercel dependency resolution but is not installed"]
+        except subprocess.TimeoutExpired:
+            return files, [
+                "npm dependency resolution timed out while generating package-lock.json "
+                f"after {_NPM_LOCKFILE_TIMEOUT_SECONDS} seconds"
+            ]
+
+        if result.returncode != 0:
+            failure_detail = _summarize_npm_failure(result.stderr or result.stdout)
+            return files, [f"npm dependency resolution failed for package.json: {failure_detail}"]
+
+        lockfile_path = tmpdir_path / "package-lock.json"
+        if not lockfile_path.is_file():
+            return files, ["npm dependency resolution succeeded but did not create package-lock.json"]
+
+        lockfile_content = lockfile_path.read_text(encoding="utf-8")
+
+    file_type = type(package_file)
+    updated_files = [file for file in files if getattr(file, "path", "") != "package-lock.json"]
+    updated_files.append(file_type(path="package-lock.json", content=lockfile_content, language="json"))
+    return sorted(updated_files, key=lambda file: str(getattr(file, "path", ""))), []
+
+
+def _summarize_npm_failure(output: str) -> str:
+    """Condense npm install output into a repair-friendly single-line error."""
+    normalized_lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not normalized_lines:
+        return "npm reported an unknown dependency resolution failure"
+
+    cleaned_lines: list[str] = []
+    for line in normalized_lines:
+        cleaned = re.sub(r"^npm error\s*", "", line, flags=re.IGNORECASE).strip()
+        if cleaned and cleaned not in cleaned_lines:
+            cleaned_lines.append(cleaned)
+        if len(cleaned_lines) >= 8:
+            break
+
+    if not cleaned_lines:
+        return "npm reported an unknown dependency resolution failure"
+
+    return " | ".join(cleaned_lines)
+
+
 def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
     """Run basic validation on a parsed code snapshot.
 
@@ -782,6 +887,8 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
                 )
 
         if path.endswith((".ts", ".tsx", ".js", ".jsx")) and content.strip():
+            if path.endswith("next-env.d.ts"):
+                continue
             syntax_error = _check_jsts_syntax(content, path)
             if syntax_error:
                 errors.append(syntax_error)

@@ -41,6 +41,9 @@ DEPENDENCY RULES:
 - If you need a new dependency, declare it in `package_changes`.
 - DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
 - Every imported package MUST be explicitly defined in `package_changes` if not in template `package.json`.
+- Choose dependency versions that are installable together with the template's
+  Next.js/React stack. If a package has React or Next peer dependencies,
+  they must explicitly support React 19 / Next 16.
 
 OUTPUT FORMAT:
 Return a single, purely valid JSON object.
@@ -73,6 +76,7 @@ STRICT RULES:
    (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
 4. Package Additions: If you need a new dependency, declare it in `package_changes`.
    DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
+   Any package with React/Next peer dependencies must explicitly support the template stack (React 19 / Next 16).
 5. Static Data Only: All data comes from typed `data/` files. No backend APIs,
    no server components fetching external data, no secrets.
 6. Polish & Interactivity: UI must be highly interactive (client-side state), fully

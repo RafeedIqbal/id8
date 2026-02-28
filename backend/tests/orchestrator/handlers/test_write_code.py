@@ -11,8 +11,11 @@ from app.orchestrator.handlers.write_code import (
     _infer_entry_point,
     _infer_test_command,
     _is_path_allowed,
+    _materialize_npm_lockfile,
+    _summarize_npm_failure,
     _validate_code_snapshot,
 )
+from app.schemas.code_snapshot import CodeFile
 
 
 def test_is_path_allowed():
@@ -53,8 +56,16 @@ def test_infer_test_command():
 def test_validate_code_snapshot_rejects_dual_app_trees():
     snapshot = {
         "files": [
-            {"path": "app/page.tsx", "content": "export default function Page() { return null; }", "language": "typescript"},
-            {"path": "src/app/page.tsx", "content": "export default function Page() { return null; }", "language": "typescript"},
+            {
+                "path": "app/page.tsx",
+                "content": "export default function Page() { return null; }",
+                "language": "typescript",
+            },
+            {
+                "path": "src/app/page.tsx",
+                "content": "export default function Page() { return null; }",
+                "language": "typescript",
+            },
             {"path": "package.json", "content": '{"dependencies":{"next":"16.1.6"}}', "language": "json"},
             {"path": "tsconfig.json", "content": "{}", "language": "json"},
         ],
@@ -63,6 +74,115 @@ def test_validate_code_snapshot_rejects_dual_app_trees():
 
     errors = _validate_code_snapshot(snapshot)
     assert "Merged snapshot cannot contain both root-level 'app/' and 'src/app/' trees" in errors
+
+
+def test_materialize_npm_lockfile_adds_lockfile(monkeypatch, tmp_path):
+    expected_lockfile = '{\n  "name": "example",\n  "lockfileVersion": 3\n}\n'
+
+    class FakeTemporaryDirectory:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_run(cmd, capture_output, text, timeout, cwd):
+        assert cmd == [
+            "npm",
+            "install",
+            "--package-lock-only",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ]
+        assert capture_output is True
+        assert text is True
+        assert timeout == 180
+        assert cwd == str(tmp_path)
+        (tmp_path / "package-lock.json").write_text(expected_lockfile, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.tempfile.TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.subprocess.run", fake_run)
+
+    files = [
+        CodeFile(
+            path="app/page.tsx",
+            content="export default function Page() { return null; }\n",
+            language="typescript",
+        ),
+        CodeFile(
+            path="package.json",
+            content=(
+                '{"name":"example","private":true,"dependencies":{"next":"16.1.6","react":"19.2.3",'
+                '"react-dom":"19.2.3"}}\n'
+            ),
+            language="json",
+        ),
+    ]
+
+    updated_files, errors = _materialize_npm_lockfile(files)
+
+    assert errors == []
+    lockfile = next(file for file in updated_files if file.path == "package-lock.json")
+    assert lockfile.content == expected_lockfile
+    assert lockfile.language == "json"
+
+
+def test_materialize_npm_lockfile_surfaces_resolution_errors(monkeypatch, tmp_path):
+    class FakeTemporaryDirectory:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_run(cmd, capture_output, text, timeout, cwd):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "npm error code ERESOLVE\n"
+                "npm error ERESOLVE unable to resolve dependency tree\n"
+                "npm error Found: react@19.2.3\n"
+                "npm error Could not resolve dependency:\n"
+                'npm error peer react@"^18.0.0" from lucide-react@0.344.0\n'
+            ),
+        )
+
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.tempfile.TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.subprocess.run", fake_run)
+
+    files = [
+        CodeFile(
+            path="package.json",
+            content=(
+                '{"name":"example","private":true,"dependencies":{"next":"16.1.6","react":"19.2.3",'
+                '"react-dom":"19.2.3","lucide-react":"0.344.0"}}\n'
+            ),
+            language="json",
+        ),
+    ]
+
+    updated_files, errors = _materialize_npm_lockfile(files)
+
+    assert updated_files == files
+    assert errors == [
+        "npm dependency resolution failed for package.json: "
+        'code ERESOLVE | ERESOLVE unable to resolve dependency tree | Found: react@19.2.3 | '
+        'Could not resolve dependency: | peer react@"^18.0.0" from lucide-react@0.344.0'
+    ]
+
+
+def test_summarize_npm_failure_deduplicates_noise():
+    summary = _summarize_npm_failure(
+        "npm error code ERESOLVE\n"
+        "npm error code ERESOLVE\n"
+        "npm error Found: react@19.2.3\n"
+        "npm error Found: react@19.2.3\n"
+    )
+
+    assert summary == "code ERESOLVE | Found: react@19.2.3"
 
 
 @pytest.mark.asyncio
@@ -100,9 +220,15 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
 
     template_dir = tmp_path / "example"
     (template_dir / "app").mkdir(parents=True)
-    (template_dir / "app" / "page.tsx").write_text("export default function Page() { return null; }\n", encoding="utf-8")
+    (template_dir / "app" / "page.tsx").write_text(
+        "export default function Page() { return null; }\n",
+        encoding="utf-8",
+    )
     (template_dir / "app" / "layout.tsx").write_text(
-        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
+        (
+            "export default function Layout({ children }: { children: React.ReactNode }) "
+            "{ return <html><body>{children}</body></html>; }\n"
+        ),
         encoding="utf-8",
     )
     (template_dir / "app" / "globals.css").write_text("@import \"tailwindcss\";\n", encoding="utf-8")
@@ -121,7 +247,11 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
                 model_id="model-a",
             ),
             SimpleNamespace(
-                content='{"files":[{"path":"app/page.tsx","content":"export default function Page() { return <main>Hello</main>; }","language":"typescript"}],"package_changes":{"dependencies":{},"devDependencies":{}}}',
+                content=(
+                    '{"files":[{"path":"app/page.tsx","content":"export default function Page() { return '
+                    '<main>Hello</main>; }","language":"typescript"}],"package_changes":{"dependencies":{},'
+                    '"devDependencies":{}}}'
+                ),
                 token_usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
                 profile_used="primary",
                 model_id="model-b",
@@ -139,6 +269,7 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
         AsyncMock(return_value={}),
     )
     monkeypatch.setattr("app.orchestrator.handlers.write_code.emit_llm_usage_event", AsyncMock(return_value=0.0))
+    monkeypatch.setattr("app.orchestrator.handlers.write_code._materialize_npm_lockfile", lambda files: (files, []))
     monkeypatch.setattr("app.config.settings.codegen_template_dir", str(template_dir))
 
     ctx = RunContext(
@@ -178,7 +309,10 @@ async def test_prepare_pr_reads_authoritative_flag_from_alias(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr("app.orchestrator.handlers.prepare_pr.resolve_github_auth", lambda: SimpleNamespace(mode="token"))
+    monkeypatch.setattr(
+        "app.orchestrator.handlers.prepare_pr.resolve_github_auth",
+        lambda: SimpleNamespace(mode="token"),
+    )
     monkeypatch.setattr("app.orchestrator.handlers.prepare_pr.GitHubClient", lambda auth: object())
     monkeypatch.setattr("app.orchestrator.handlers.prepare_pr._run_github_flow", fake_run_github_flow)
 

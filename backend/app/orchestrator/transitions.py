@@ -22,7 +22,7 @@ TRANSITIONS: dict[NodeName, dict[str, NodeName]] = {
     NodeName.WRITE_CODE: {
         "success": NodeName.SECURITY_GATE,
         "failure": NodeName.END_FAILED,
-        "failed": NodeName.END_FAILED,
+        "failed": NodeName.WRITE_CODE,
     },
     NodeName.SECURITY_GATE: {
         "passed": NodeName.PREPARE_PR,
