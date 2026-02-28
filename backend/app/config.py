@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+
+def _resolve_repo_root() -> Path:
+    app_or_backend_root = Path(__file__).resolve().parent.parent
+    if app_or_backend_root.name == "backend":
+        return app_or_backend_root.parent
+    return app_or_backend_root
 
 
 class Settings(BaseSettings):
@@ -43,6 +52,17 @@ class Settings(BaseSettings):
 
     # Codegen Template
     codegen_template_dir: str = "exampleApp/example"
+
+    @property
+    def repo_root(self) -> Path:
+        return _resolve_repo_root()
+
+    @property
+    def resolved_codegen_template_dir(self) -> Path:
+        configured = Path(self.codegen_template_dir).expanduser()
+        if configured.is_absolute():
+            return configured.resolve()
+        return (self.repo_root / configured).resolve()
 
 
 settings = Settings()

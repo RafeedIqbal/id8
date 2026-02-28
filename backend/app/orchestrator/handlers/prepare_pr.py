@@ -80,6 +80,9 @@ class PreparePRHandler(NodeHandler):
                 error="code_snapshot contains no files to push",
             )
 
+        code_metadata = code_snapshot.get("__code_metadata") or {}
+        is_authoritative = bool(code_metadata.get("is_authoritative_merged_tree"))
+
         # 2. Resolve GitHub auth.
         auth = resolve_github_auth()
         if auth.mode == "none":
@@ -96,6 +99,7 @@ class PreparePRHandler(NodeHandler):
                 client,
                 files,
                 skip_check_runs=(auth.mode == "token"),
+                authoritative=is_authoritative,
             )
         except GitHubRateLimitError as exc:
             raise RateLimitError(
@@ -125,6 +129,7 @@ async def _run_github_flow(
     files: list[dict[str, str]],
     *,
     skip_check_runs: bool = False,
+    authoritative: bool = False,
 ) -> NodeResult:
     # 3. Determine owner from auth / existing repo.
     project = await _load_project(ctx)
@@ -231,6 +236,7 @@ async def _run_github_flow(
         branch_name,
         files,
         commit_message=f"chore(id8): generate code for run {ctx.run_id}",
+        authoritative=authoritative,
     )
     logger.info(
         "Pushed %d files to %s/%s@%s (commit=%s)",

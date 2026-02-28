@@ -6,7 +6,13 @@ JSON produced by the model.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+
+def _default_package_changes() -> dict[str, dict[str, str]]:
+    return {"dependencies": {}, "devDependencies": {}}
 
 
 class CodeFile(BaseModel):
@@ -22,17 +28,21 @@ class CodeChunkContent(BaseModel):
 
     files: list[CodeFile] = Field(..., description="Files generated for the current phase")
     package_changes: dict[str, dict[str, str]] = Field(
-        default_factory=lambda: {"dependencies": {},"devDependencies": {}},
-        description="Package additions. Only add new packages, never return a full package.json."
+        default_factory=_default_package_changes,
+        description="Package additions. Only add new packages, never return a full package.json.",
     )
+
 
 class CodeSnapshotContent(BaseModel):
     """Structured code snapshot produced by the LLM."""
 
     files: list[CodeFile] = Field(..., description="All generated source files")
     build_command: str = Field(default="npm run build", description='e.g. "npm run build"')
-    test_command: str = Field(default="npm test", description='e.g. "npm test"')
-    entry_point: str = Field(default="src/app/page.tsx", description='e.g. "src/app/page.tsx"')
-    __code_metadata: dict[str, str | int | bool | dict] = Field(
-        default_factory=dict, description="Internal merge and providence metadata"
+    test_command: str = Field(
+        default="npx tsc --noEmit && npm run lint",
+        description='e.g. "npx tsc --noEmit && npm run lint"',
+    )
+    entry_point: str = Field(default="app/page.tsx", description='e.g. "app/page.tsx"')
+    code_metadata_: dict[str, Any] = Field(
+        default_factory=dict, alias="__code_metadata", description="Internal merge and providence metadata"
     )

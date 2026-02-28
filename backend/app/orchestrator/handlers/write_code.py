@@ -1,10 +1,10 @@
-"""WriteCode node handler — generates a full code snapshot from approved artifacts.
+"""WriteCode node handler — generates a full merged code snapshot from approved artifacts.
 
-Code generation is performed in phased chunks to stay within token limits:
-backend, frontend, configuration, and migrations.  The handler then assembles
-the full snapshot and runs static validation checks before artifact creation.
-When SecurityGate fails and loops back, unresolved high/critical findings are
-fed into generation as a remediation instruction.
+Code generation is performed in phased chunks on top of the template project
+to stay within token limits. The handler then assembles the merged snapshot
+and runs static validation checks before artifact creation. When SecurityGate
+fails and loops back, unresolved high/critical findings are fed into
+generation as a remediation instruction.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ logger = logging.getLogger("id8.orchestrator.handlers.write_code")
 # How many times to retry when the LLM returns invalid JSON.
 _MAX_PARSE_RETRIES = 1
 _MAX_VALIDATION_REPAIR_ATTEMPTS = 1
-_GENERATION_PHASES = ("data_and_types", "frontend", "config")
+_GENERATION_PHASES = ("shared_foundation", "pages")
 _MAX_REPAIR_CONTEXT_FILES = 40
 _MAX_REPAIR_FILE_CHARS = 4000
 _DEPENDENCY_MANIFESTS = (
@@ -63,6 +63,23 @@ _TS_IMPORT_RE = re.compile(
 """
 )
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+")
+
+_ALLOWED_OVERRIDE_PATHS = {"app/page.tsx", "app/layout.tsx", "app/globals.css"}
+_ALLOWED_NEW_DIRS = (
+    "app/",
+    "components/",
+    "lib/",
+    "types/",
+    "data/",
+    "public/",
+)
+
+
+def _is_path_allowed(path: str) -> bool:
+    if path in _ALLOWED_OVERRIDE_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _ALLOWED_NEW_DIRS)
+
 
 _REPAIR_SYSTEM_PROMPT = """\
 You are fixing a generated code snapshot that failed static validation.
@@ -141,8 +158,35 @@ class WriteCodeHandler(NodeHandler):
         # 4. Capture artifact lineage.
         source_artifacts = await _load_source_artifact_references(ctx)
 
+        from app.codegen.template_project import (
+            TemplateProjectConfigError,
+            get_template_filepaths,
+            load_template_tree,
+            merge_project,
+            resolve_template_dir,
+        )
+        from app.config import settings
+        from app.schemas.code_snapshot import CodeFile
+
+        # 4.5 Load Template Context
+        try:
+            template_dir = str(resolve_template_dir(settings.codegen_template_dir))
+            template_inventory = get_template_filepaths(template_dir)
+            template_files = load_template_tree(template_dir)
+        except TemplateProjectConfigError as exc:
+            return NodeResult(outcome="failure", error=str(exc))
+
+        key_files = {"package.json", "app/layout.tsx", "app/page.tsx", "app/globals.css"}
+        template_files_dict = {f.path: f.content for f in template_files if f.path in key_files}
+
+        template_context = {
+            "inventory": template_inventory,
+            "files": template_files_dict,
+        }
+
         # 5. Generate files in structured chunks.
         files_by_path: dict[str, dict[str, str]] = {}
+        all_package_additions: dict[str, dict[str, str]] = {"dependencies": {}, "devDependencies": {}}
         phase_file_counts: dict[str, int] = {}
         last_llm_response: Any | None = None
         total_prompt_tokens = 0
@@ -156,8 +200,9 @@ class WriteCodeHandler(NodeHandler):
                 feedback=feedback,
                 chunk=phase,
                 generated_files=list(files_by_path.values()),
+                template_context=template_context,
             )
-            chunk_files, llm_response, chunk_error = await _generate_chunk(
+            chunk_files, chunk_pkg, llm_response, chunk_error = await _generate_chunk(
                 profile=profile,
                 node_name=ctx.current_node,
                 phase=phase,
@@ -195,7 +240,7 @@ class WriteCodeHandler(NodeHandler):
             phase_file_counts[phase] = 0
             for item in chunk_files:
                 path = str(item.get("path", "")).strip()
-                if not path:
+                if not path or not _is_path_allowed(path):
                     continue
                 normalized = {
                     "path": path,
@@ -207,14 +252,28 @@ class WriteCodeHandler(NodeHandler):
                     files_by_path[path] = normalized
                     phase_file_counts[phase] += 1
 
+            for sec in ["dependencies", "devDependencies"]:
+                for pkg_name, pkg_ver in chunk_pkg.get(sec, {}).items():
+                    all_package_additions[sec][pkg_name] = pkg_ver
+
         if not files_by_path:
             return NodeResult(
                 outcome="failure",
-                error="Code generation returned no files across all phases",
+                error="Code generation returned no allowed files across all phases",
             )
 
-        # 6. Assemble and validate the full snapshot.
-        snapshot_data = _assemble_code_snapshot(list(files_by_path.values()))
+        # 6. Assemble and validate the full merged snapshot.
+        ai_code_files = [CodeFile(**f) for f in files_by_path.values()]
+        try:
+            merged_files = merge_project(template_dir, ai_code_files, all_package_additions)
+        except ValueError as e:
+            return NodeResult(
+                outcome="failure",
+                error=f"Template merge failed: {e}",
+            )
+
+        merged_files_dict = {f.path: f.model_dump() for f in merged_files}
+        snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
         validation_errors = _validate_code_snapshot(snapshot_data)
         for _ in range(_MAX_VALIDATION_REPAIR_ATTEMPTS):
             if not validation_errors:
@@ -223,9 +282,9 @@ class WriteCodeHandler(NodeHandler):
             repair_attempted = True
             repair_system_prompt, repair_user_prompt = _build_validation_repair_prompts(
                 validation_errors=validation_errors,
-                files_by_path=files_by_path,
+                files_by_path=merged_files_dict,
             )
-            repair_files, repair_llm_response, repair_error = await _generate_chunk(
+            repair_files, repair_pkg, repair_llm_response, repair_error = await _generate_chunk(
                 profile=profile,
                 node_name=f"{ctx.current_node}:repair",
                 phase="repair",
@@ -273,7 +332,7 @@ class WriteCodeHandler(NodeHandler):
             phase_file_counts["repair"] = 0
             for item in repair_files:
                 path = str(item.get("path", "")).strip()
-                if not path:
+                if not path or not _is_path_allowed(path):
                     continue
                 normalized = {
                     "path": path,
@@ -285,7 +344,22 @@ class WriteCodeHandler(NodeHandler):
                     files_by_path[path] = normalized
                     phase_file_counts["repair"] += 1
 
-            snapshot_data = _assemble_code_snapshot(list(files_by_path.values()))
+            for sec in ["dependencies", "devDependencies"]:
+                for pkg_name, pkg_ver in repair_pkg.get(sec, {}).items():
+                    all_package_additions[sec][pkg_name] = pkg_ver
+
+            ai_code_files = [CodeFile(**f) for f in files_by_path.values()]
+            try:
+                merged_files = merge_project(template_dir, ai_code_files, all_package_additions)
+            except ValueError as e:
+                return NodeResult(
+                    outcome="failure",
+                    error=f"Repair failed on merge: {e}",
+                    context_updates={"validation_errors": validation_errors, "repair_attempted": True},
+                )
+
+            merged_files_dict = {f.path: f.model_dump() for f in merged_files}
+            snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
             validation_errors = _validate_code_snapshot(snapshot_data)
 
         if validation_errors:
@@ -310,6 +384,13 @@ class WriteCodeHandler(NodeHandler):
         snapshot_data["__code_metadata"] = {
             "source_artifacts": source_artifacts,
             "security_feedback": feedback or "",
+            "template_dir": template_dir,
+            "template_file_count": len(template_files),
+            "ai_delta_file_count": len(files_by_path),
+            "merged_file_count": len(merged_files),
+            "allowed_override_paths": list(_ALLOWED_OVERRIDE_PATHS),
+            "package_additions": all_package_additions,
+            "is_authoritative_merged_tree": True,
             "file_count": len(snapshot_data.get("files", [])),
             "total_loc": sum(f.get("content", "").count("\n") + 1 for f in snapshot_data.get("files", [])),
             "generation_phases": list(_GENERATION_PHASES),
@@ -538,7 +619,7 @@ async def _generate_chunk(
     system_prompt: str,
     user_prompt: str,
     timeout: float | None = 1200.0,
-) -> tuple[list[dict[str, str]], Any | None, str | None]:
+) -> tuple[list[dict[str, str]], dict[str, dict[str, str]], Any | None, str | None]:
     """Run a generation phase with parse retries and return files."""
     last_error: str | None = None
     last_response: Any | None = None
@@ -563,7 +644,12 @@ async def _generate_chunk(
 
         chunk_data, parse_error = _parse_chunk_response(llm_response.content)
         if chunk_data is not None:
-            return chunk_data.get("files", []), llm_response, None
+            return (
+                chunk_data.get("files", []),
+                chunk_data.get("package_changes", {"dependencies": {}, "devDependencies": {}}),
+                llm_response,
+                None,
+            )
 
         last_error = parse_error
         logger.warning(
@@ -574,7 +660,7 @@ async def _generate_chunk(
             parse_error,
         )
 
-    return [], last_response, last_error or "Unknown parse failure"
+    return [], {"dependencies": {}, "devDependencies": {}}, last_response, last_error or "Unknown parse failure"
 
 
 def _parse_chunk_response(content: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -616,7 +702,7 @@ def _assemble_code_snapshot(files: list[dict[str, str]]) -> dict[str, Any]:
         test_command=_infer_test_command(paths),
         entry_point=_infer_entry_point(paths),
     )
-    return snapshot.model_dump()
+    return snapshot.model_dump(by_alias=True)
 
 
 def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
@@ -637,6 +723,9 @@ def _validate_code_snapshot(snapshot: dict[str, Any]) -> list[str]:
     if not file_paths:
         errors.append("Code snapshot contains files with missing/empty paths")
         return errors
+
+    if any(path.startswith("app/") for path in file_paths) and any(path.startswith("src/app/") for path in file_paths):
+        errors.append("Merged snapshot cannot contain both root-level 'app/' and 'src/app/' trees")
 
     has_python_files = any(path.endswith(".py") for path in file_paths)
     has_frontend_assets = any(
@@ -768,6 +857,8 @@ def _infer_entry_point(file_paths: list[str]) -> str:
     path_set = set(file_paths)
 
     for candidate in (
+        "app/page.tsx",
+        "app/page.jsx",
         "frontend/src/main.tsx",
         "frontend/src/main.jsx",
         "frontend/src/pages/index.tsx",
@@ -788,7 +879,7 @@ def _infer_entry_point(file_paths: list[str]) -> str:
 
     if file_paths:
         return sorted(file_paths)[0]
-    return "src/app/page.tsx"
+    return "app/page.tsx"
 
 
 def _infer_build_command(file_paths: list[str]) -> str:
@@ -801,7 +892,7 @@ def _infer_build_command(file_paths: list[str]) -> str:
 
 def _infer_test_command(file_paths: list[str]) -> str:
     if any(path.endswith("package.json") for path in file_paths):
-        return "npm test"
+        return "npx tsc --noEmit && npm run lint"
     if any(path.endswith((".py", "requirements.txt", "pyproject.toml")) for path in file_paths):
         return "pytest"
     return "echo test"
@@ -1062,6 +1153,8 @@ def _check_jsts_imports(path: str, source: str, file_paths: set[str]) -> list[st
 
 def _has_frontend_entrypoint(file_paths: set[str]) -> bool:
     for candidate in (
+        "app/page.tsx",
+        "app/page.jsx",
         "frontend/src/main.tsx",
         "frontend/src/main.jsx",
         "frontend/src/pages/index.tsx",

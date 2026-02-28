@@ -18,15 +18,15 @@ STACK (Strictly Enforced):
 - Backend: NONE. Zero API routes, zero server actions, zero database.
 
 CORE MANDATES:
-1. **Flawless Execution & Vercel Deployability:** The code MUST pass `next build` and `next lint` without warnings.
+1. **Flawless Execution & Vercel Deployability:** The code MUST pass `next build`, `tsc --noEmit`, and `npm run lint`.
    - For Next.js 16+, use `proxy.ts` (not `middleware.ts`) and export `proxy`.
    - For React 19, `startTransition` callbacks must return `void` (wrap async actions as `async () => { await ... }`).
    - Add `'use client'` at the top of files using React hooks (`useState`, `useEffect`, `useRef`).
    - Prevent hydration errors: Do not render browser-specific globals (`window`, `document`) directly
-     in the component body without `useEffect` or dynamic imports.
+      in the component body without `useEffect` or dynamic imports.
    - All imports MUST resolve perfectly. Do not import phantom packages.
-2. **Strict TypeScript:** No `any` types. Define comprehensive interfaces for all data structures in `src/types/`.
-3. **Purely Visual Frontend:** All data must be hardcoded in typed `src/data/*.ts` files. Use realistic,
+2. **Strict TypeScript:** No `any` types. Define comprehensive interfaces for all data structures in `types/`.
+3. **Purely Visual Frontend:** All data must be hardcoded in typed `data/*.ts` files. Use realistic,
    rich mock data (5-15 items per entity, populated with ui-avatars.com URLs, realistic dates, etc.).
    NO `fetch()`, NO backend logic.
 4. **Interactive UI:** Client-side state must be fully implemented for filters, search, sorting, tabs,
@@ -36,24 +36,11 @@ CORE MANDATES:
 6. **Visual Polish & Responsiveness:** Use Tailwind CSS utilities for a cohesive design system (typography
    scales, consistent spacing, rounded corners, subtle shadows, hover/focus/active states).
    Ensure strictly mobile-first, responsive layouts.
-7. **Subtle Animations:** Include smooth transitions using CSS or Framer Motion for interactive
-   elements (modals fading in, accordions expanding, dropdowns appearing).
 
 DEPENDENCY RULES:
-- MUST include: `next`, `react`, `react-dom`, `typescript`, `tailwindcss`, `@tailwindcss/postcss`, `lucide-react`.
-- RECOMMENDED: `framer-motion`, `clsx`, `tailwind-merge`.
-- PROHIBITED: Database drivers, ORMs, Auth libraries, API frameworks.
-- Every imported package MUST be explicitly defined in `package.json` with highly compatible versions.
-- For Tailwind v4, load external fonts via `<link>` in `layout.tsx` head, not CSS `@import url(...)`.
-
-FILE STRUCTURE EXPECTATION:
-- `src/app/layout.tsx` (Global layout, fonts, navigation shell)
-- `src/app/page.tsx` (Landing/Home)
-- `src/app/[route]/page.tsx` (Individual screens)
-- `src/components/` (Reusable UI elements)
-- `src/data/` (Typed hardcoded exports)
-- `src/types/` (TS Interfaces)
-- `src/lib/` (Utilities like `cn` class merger)
+- If you need a new dependency, declare it in `package_changes`.
+- DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
+- Every imported package MUST be explicitly defined in `package_changes` if not in template `package.json`.
 
 OUTPUT FORMAT:
 Return a single, purely valid JSON object.
@@ -64,30 +51,29 @@ The JSON must perfectly match this schema:
   "files": [
     {"path": "relative/path/to/file.ts", "content": "raw file contents", "language": "typescript"}
   ],
-  "build_command": "npm run build",
-  "test_command": "npx tsc --noEmit && next lint",
-  "entry_point": "src/app/page.tsx"
+  "package_changes": {
+    "dependencies": {},
+    "devDependencies": {}
+  }
 }
 """
 
 _SYSTEM_PROMPT_CHUNK = """\
-You are an elite Staff Frontend Engineer generating ONE phased chunk of a self-contained Next.js prototype.
+You are an elite Staff Frontend Engineer generating ONE phased chunk of a Next.js prototype
+built on top of an existing template project.
 
 STACK: Next.js 16+ App Router, React 19+, TypeScript, Tailwind CSS v4. Hosting: Vercel. Backend: NONE.
 
 STRICT RULES:
-1. Output ONLY the files required for the requested phase. Content must be
-   complete and production-ready.
-2. Ensure flawless integration. Keep imports completely consistent with the provided
-   file inventory and already-generated files.
-3. Zero Errors: Code MUST pass `tsc --noEmit` and `next lint`. Use strict TypeScript
+1. Output ONLY the files required for the requested phase, or overrides to allowed template files
+   (app/page.tsx, app/layout.tsx, app/globals.css). Content must be complete and production-ready.
+2. Ensure flawless integration with the provided template context. Do NOT redefine standard
+   configurations (like next.config.ts); they are managed by the template.
+3. Zero Errors: Code MUST pass `tsc --noEmit` and `npm run lint`. Use strict TypeScript
    (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
-   For React 19, ensure `startTransition` callbacks return `void`.
-   For Next.js 16+, use `proxy.ts` if a proxy is needed.
-   For Tailwind v4, use `<link>` for fonts in the root layout.
-4. Build Reliability: Every imported package must exist in the `package.json`. Every
-   local import must map to a valid path under `src/`.
-5. Static Data Only: All data comes from typed `src/data/` files. No backend APIs,
+4. Package Additions: If you need a new dependency, declare it in `package_changes`.
+   DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
+5. Static Data Only: All data comes from typed `data/` files. No backend APIs,
    no server components fetching external data, no secrets.
 6. Polish & Interactivity: UI must be highly interactive (client-side state), fully
    responsive (mobile-first Tailwind), and visually refined (hover states, transitions).
@@ -95,7 +81,14 @@ STRICT RULES:
 
 OUTPUT FORMAT:
 Return ONLY a valid, unescaped JSON object. NO markdown fences (```json). NO commentary.
-Schema: {"files": [{"path": "string", "content": "string", "language": "string"}]}
+Schema:
+{
+  "files": [{"path": "string", "content": "string", "language": "string"}],
+  "package_changes": {
+    "dependencies": {},
+    "devDependencies": {}
+  }
+}
 """
 
 _USER_PROMPT_FULL = """\
@@ -157,47 +150,40 @@ Phase Requirements:
 ## PRD
 {prd_content}
 
+## Template Context
+{template_context}
+
 ## Already Generated Files (Context Only)
 {generated_files}
-
-## Existing File Inventory (For Resolving Imports)
-{generated_file_index}
 {security_feedback_block}
 {previous_code_block}
 
 CRITICAL EXECUTION STEPS:
-1. Generate ONLY the files for the **{chunk_label}** phase.
-2. Ensure all exports align with the existing file inventory.
+1. Generate ONLY the files and package additions for the **{chunk_label}** phase.
+2. Ensure all exports align with the template inventory and generated files.
 3. Verify that there are no TS errors, linting warnings, or missing dependencies.
-4. Return ONLY valid JSON containing the `files` array. No markdown, no backend code.
+4. Return ONLY valid JSON matching the exact schema. No markdown, no backend code.
 """
 
 _CHUNK_REQUIREMENTS = {
-    "data_and_types": (
-        "Generate strict TypeScript interfaces in `src/types/` and hardcoded dummy data arrays in `src/data/`. "
-        "Include realistic, comprehensive mock data (5-15 items per entity) satisfying all UI states. "
-        "Add generic utility helpers in `src/lib/` (e.g., `cn` for class merging using `clsx` and "
-        "`tailwind-merge`, date formatting). "
+    "shared_foundation": (
+        "Generate strict TypeScript interfaces in `types/`, hardcoded dummy data arrays in `data/`, "
+        "reusable UI components in `components/`, and generic utility helpers in `lib/`. "
+        "Also include any overrides to the template shell (e.g. `app/layout.tsx`, `app/globals.css`). "
+        "Include realistic mock data (5-15 items per entity). Output package additions for components used. "
         "ABSOLUTELY NO API routes, server actions, or database logic."
     ),
-    "frontend": (
-        "Create Next.js App Router pages and React components matching the design spec meticulously. "
-        "Each distinct screen maps to a `page.tsx` under `src/app/`. Implement a persistent navigation shell (layout). "
-        "Include `'use client'` directives on interactive components. "
-        "Ensure all filters, search, sort, modals, and tabs work purely via local state (`useState`/`useMemo`). "
-        "Apply Tailwind CSS for visually polished, mobile-first styling with focus/hover states and smooth animations. "
-        "Import and utilize the dummy data from `src/data/` seamlessly."
+    "pages": (
+        "Generate all application pages/routes including the root `app/page.tsx` and any required sub-routes. "
+        "Create Next.js App Router pages meticulously matching the design spec. "
+        "Include `'use client'` directives on interactive components if they hold state. "
+        "Ensure all filters, search, sort, modals, and tabs work purely via local state. "
+        "Import and utilize the dummy data from `data/` and components from `components/`. "
+        "Output package additions if distinct page-specific libraries are needed."
     ),
-    "config": (
-        "Create ironclad project configuration files guaranteeing a flawless Vercel deployment: "
-        "`package.json` (include all UI/utility dependencies and standard build/lint scripts), "
-        "`next.config.ts`, `tsconfig.json` (strict mode enabled), `tailwind.config.ts`, "
-        "`postcss.config.mjs`, `src/app/globals.css` (Tailwind directives + variables), "
-        "and `src/app/layout.tsx` (root layout with font imports via `<link>`). "
-        "Ensure no `.env` dependencies exist."
-    ),
-    "migrations": (
-        "Return an empty files array. This is a purely static frontend prototype. Migrations are strictly prohibited."
+    "repair": (
+        "Review the previous code and security feedback. Output ONLY the files that must be corrected to fix "
+        "the reported issues. Ensure you do NOT break existing working code."
     ),
 }
 
@@ -239,23 +225,23 @@ def _serialize_generated_files(files: list[dict[str, Any]] | None) -> str:
     return "\n\n".join(parts)
 
 
-def _serialize_generated_file_index(files: list[dict[str, Any]] | None) -> str:
-    """Serialize a compact list of generated paths for import/dependency planning."""
-    if not files:
-        return "(none yet)"
+def _serialize_template_context(template_context: dict[str, Any] | None) -> str:
+    """Serialize the template context including file inventory and key file contents."""
+    if not template_context:
+        return "(no template context provided)"
 
-    paths = sorted(
-        {str(file_data.get("path", "")).strip() for file_data in files if str(file_data.get("path", "")).strip()}
-    )
-    if not paths:
-        return "(none yet)"
+    inventory = template_context.get("inventory", [])
+    files = template_context.get("files", {})
 
-    max_paths = 400
-    display = paths[:max_paths]
-    lines = [f"- {path}" for path in display]
-    if len(paths) > max_paths:
-        lines.append(f"- ... ({len(paths) - max_paths} more paths omitted)")
-    return "\n".join(lines)
+    parts = ["### Template Inventory"]
+    parts.extend([f"- {path}" for path in inventory])
+
+    parts.append("\n### Template Key Files")
+    for path in sorted(files):
+        content = files[path]
+        parts.append(f"#### {path}\n```\n{content}\n```\n")
+
+    return "\n".join(parts)
 
 
 def _serialize_design_codegen_context(design_spec: Any) -> str:
@@ -297,12 +283,14 @@ def build_prompts(
     feedback: str | None = None,
     chunk: str = "full_snapshot",
     generated_files: list[dict[str, Any]] | None = None,
+    template_context: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return ``(system_prompt, user_prompt)`` for code generation."""
     arts = previous_artifacts or {}
     design_spec = _serialize(arts.get("design_spec"))
     design_visual_context = _serialize_design_codegen_context(arts.get("design_spec"))
     prd = _serialize(arts.get("prd"))
+    serialized_template_context = _serialize_template_context(template_context)
 
     if chunk == "full_snapshot":
         if feedback:
@@ -322,11 +310,11 @@ def build_prompts(
             )
         return _SYSTEM_PROMPT_FULL, user_prompt
 
-    chunk_requirements = _CHUNK_REQUIREMENTS.get(chunk, _CHUNK_REQUIREMENTS["data_and_types"])
+    chunk_requirements = _CHUNK_REQUIREMENTS.get(chunk, _CHUNK_REQUIREMENTS["shared_foundation"])
     security_feedback_block = ""
     previous_code_block = ""
     if feedback:
-        security_feedback_block = f"\n## Security Remediation (MUST FIX)\nFix these security issues:\n{feedback}\n"
+        security_feedback_block = f"\n## Feedback (MUST FIX)\nFix these issues:\n{feedback}\n"
         previous_code = _serialize_code_snapshot(arts.get("code_snapshot"))
         previous_code_block = f"\n## Previous Code Snapshot\n{previous_code}\n"
 
@@ -336,8 +324,8 @@ def build_prompts(
         design_spec_content=design_spec,
         design_visual_context=design_visual_context,
         prd_content=prd,
+        template_context=serialized_template_context,
         generated_files=_serialize_generated_files(generated_files),
-        generated_file_index=_serialize_generated_file_index(generated_files),
         security_feedback_block=security_feedback_block,
         previous_code_block=previous_code_block,
     )
@@ -364,6 +352,7 @@ def build_chunk_prompts(
     previous_artifacts: dict[str, Any] | None = None,
     feedback: str | None = None,
     generated_files: list[dict[str, Any]] | None = None,
+    template_context: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Convenience wrapper for phased generation prompts."""
     return build_prompts(
@@ -371,4 +360,5 @@ def build_chunk_prompts(
         feedback=feedback,
         chunk=chunk,
         generated_files=generated_files,
+        template_context=template_context,
     )

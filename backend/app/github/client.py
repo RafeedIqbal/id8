@@ -337,6 +337,7 @@ class GitHubClient:
         branch: str,
         files: list[dict[str, str]],
         commit_message: str = "chore: id8 generated code",
+        authoritative: bool = False,
     ) -> str:
         """Push *files* to *branch* as a single commit.
 
@@ -384,11 +385,13 @@ class GitHubClient:
                 }
             )
 
-        # 4. Create a new tree on top of the base tree.
+        # 4. Create a new tree on top of the base tree (or from scratch if authoritative).
         tree_body: dict[str, Any] = {
-            "base_tree": base_tree_sha,
             "tree": tree_entries,
         }
+        if not authoritative:
+            tree_body["base_tree"] = base_tree_sha
+
         tree_data = cast(
             dict[str, Any], await self._request("POST", f"/repos/{owner}/{repo}/git/trees", body=tree_body)
         )
