@@ -123,6 +123,13 @@ class GenerateDesignHandler(NodeHandler):
         if feedback_text:
             artifact_data["__design_metadata"]["feedback_applied"] = feedback_text
 
+        stitch_url = output.metadata.get("stitch_project_url")
+        if stitch_url:
+            stack = dict(project.stack_json or {})
+            stack["stitch_project_url"] = stitch_url
+            project.stack_json = stack
+            ctx.db.add(project)
+
         logger.info(
             "Generated design for project=%s provider=%s screens=%d",
             ctx.project_id,

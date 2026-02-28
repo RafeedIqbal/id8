@@ -40,12 +40,14 @@ const ARTIFACT_SUB_ITEMS = [
 function Logo() {
   return (
     <Link href="/" className="flex items-center gap-3 px-2 py-1 group">
-      <div className="w-9 h-9 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center group-hover:bg-accent/15 transition-colors">
-        <span className="font-mono-display text-accent text-sm font-bold tracking-tighter">i8</span>
+      <div className="relative flex items-center justify-center bg-[#050505] border border-border-1 rounded-md px-1.5 py-1 overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none opacity-[0.03]" style={{ backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 1px, #fff 1px, #fff 2px)", backgroundSize: "100% 2px" }}></div>
+        <span className="font-mono-display text-white text-[1.375rem] font-bold tracking-tighter z-10 relative">id</span>
+        <span className="font-mono-display text-[#00FF41] text-[1.375rem] font-bold tracking-tighter z-10 relative drop-shadow-[0_0_8px_rgba(0,255,65,0.4)]">8</span>
       </div>
       <div>
         <div className="font-mono-display text-text-0 text-sm font-semibold tracking-tight">ID8</div>
-        <div className="text-[10px] text-text-3 tracking-widest uppercase">Operator</div>
+        <div className="text-[10px] text-accent tracking-widest uppercase">Operator</div>
       </div>
     </Link>
   );
@@ -155,6 +157,9 @@ export function Sidebar() {
   })();
 
   const stitchProjectUrl = (() => {
+    const fromProject = project?.stackJson?.stitch_project_url as string | undefined;
+    if (fromProject) return fromProject;
+
     const direct =
       (designMetadata.stitch_project_url as string | undefined) ??
       (designMetadata.stitch_url as string | undefined) ??
