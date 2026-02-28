@@ -26,4 +26,14 @@ def test_build_chunk_prompts_with_template_context():
     
     # Check chunk constraints
     assert "reusable UI components in `components/`" in user_prompt
-    assert "root `app/page.tsx`" not in user_prompt
+    assert "`src/components/`" not in user_prompt
+    assert "`src/data/`" not in user_prompt
+
+
+def test_pages_prompt_uses_root_app_router_paths():
+    from app.llm.prompts.code_generation import build_chunk_prompts
+
+    _, user_prompt = build_chunk_prompts(chunk="pages", template_context={"inventory": [], "files": {}})
+
+    assert "root `app/page.tsx`" in user_prompt
+    assert "`src/app/page.tsx`" not in user_prompt
