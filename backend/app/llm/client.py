@@ -73,7 +73,7 @@ def _get_client() -> genai.Client:
 # ---------------------------------------------------------------------------
 
 # Retryable HTTP status codes from the Gemini API.
-_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_RETRYABLE_STATUS_CODES = frozenset({429})
 
 
 async def generate(
@@ -82,6 +82,7 @@ async def generate(
     prompt: str,
     system_prompt: str = "",
     tools: Sequence[types.Tool] | None = None,
+    timeout: float | None = None,
 ) -> LlmResponse:
     """Call Gemini ``generate_content`` and return an :class:`LlmResponse`.
 
@@ -105,10 +106,11 @@ async def generate(
                 contents=prompt,
                 config=config,
             ),
-            timeout=max(0.1, float(settings.llm_request_timeout_seconds)),
+            timeout=max(0.1, timeout if timeout is not None else float(settings.llm_request_timeout_seconds)),
         )
     except TimeoutError as exc:
-        raise RetryableError(f"Gemini request timed out after {settings.llm_request_timeout_seconds}s") from exc
+        effective_timeout = timeout if timeout is not None else settings.llm_request_timeout_seconds
+        raise RetryableError(f"Gemini request timed out after {effective_timeout}s") from exc
     except genai_errors.APIError as exc:
         _handle_api_error(exc)
         raise  # unreachable — _handle_api_error always raises
@@ -159,6 +161,7 @@ async def generate_with_fallback(
     prompt: str,
     system_prompt: str = "",
     tools: list[types.Tool] | None = None,
+    timeout: float | None = None,
 ) -> LlmResponse:
     """Generate content with automatic fallback retry logic.
 
@@ -211,6 +214,7 @@ async def generate_with_fallback(
                 prompt=current_prompt,
                 system_prompt=system_prompt,
                 tools=tools,
+                timeout=timeout,
             )
             return LlmResponse(
                 content=resp.content,
@@ -310,8 +314,8 @@ def _handle_api_error(exc: genai_errors.APIError) -> None:
             msg += f" — retry after {retry_after}s"
         raise RateLimitError(msg, retry_after_seconds=retry_after) from exc
 
-    if status in _RETRYABLE_STATUS_CODES:
-        raise RetryableError(f"Transient Gemini API error ({status})") from exc
+    # If an error message is returned from the API (e.g. 500/503/504),
+    # treat it as a permanent error to fail immediately instead of retrying.
 
     # Permanent error — let it propagate
     raise exc

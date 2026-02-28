@@ -57,14 +57,22 @@ async def run_orchestrator(run_id: uuid.UUID, db: AsyncSession) -> bool:
         logger.error("Run %s not found — aborting", run_id)
         return False
 
-    logger.info("Orchestrator started for run=%s", run_id)
     workflow_payload: dict[str, Any] = {}
+
+    is_first_iteration = True
 
     while True:
         run = await _lock_run_for_processing(run_id, db)
         if run is None:
-            logger.info("Run %s is already being processed by another worker", run_id)
+            if is_first_iteration:
+                logger.debug("Run %s is already being processed by another worker", run_id)
+            else:
+                logger.info("Run %s was locked by another process during execution", run_id)
             return False
+
+        if is_first_iteration:
+            logger.info("Orchestrator started for run=%s", run_id)
+            is_first_iteration = False
 
         node_name = run.current_node
         try:

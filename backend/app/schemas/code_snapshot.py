@@ -21,7 +21,10 @@ class CodeChunkContent(BaseModel):
     """Single phased generation chunk."""
 
     files: list[CodeFile] = Field(..., description="Files generated for the current phase")
-
+    package_changes: dict[str, dict[str, str]] = Field(
+        default_factory=lambda: {"dependencies": {},"devDependencies": {}},
+        description="Package additions. Only add new packages, never return a full package.json."
+    )
 
 class CodeSnapshotContent(BaseModel):
     """Structured code snapshot produced by the LLM."""
@@ -30,3 +33,6 @@ class CodeSnapshotContent(BaseModel):
     build_command: str = Field(default="npm run build", description='e.g. "npm run build"')
     test_command: str = Field(default="npm test", description='e.g. "npm test"')
     entry_point: str = Field(default="src/app/page.tsx", description='e.g. "src/app/page.tsx"')
+    __code_metadata: dict[str, str | int | bool | dict] = Field(
+        default_factory=dict, description="Internal merge and providence metadata"
+    )

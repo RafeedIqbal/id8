@@ -537,6 +537,7 @@ async def _generate_chunk(
     phase: str,
     system_prompt: str,
     user_prompt: str,
+    timeout: float | None = 1200.0,
 ) -> tuple[list[dict[str, str]], Any | None, str | None]:
     """Run a generation phase with parse retries and return files."""
     last_error: str | None = None
@@ -556,6 +557,7 @@ async def _generate_chunk(
             node_name=node_name,
             prompt=user_prompt,
             system_prompt=effective_system,
+            timeout=timeout,
         )
         last_response = llm_response
 

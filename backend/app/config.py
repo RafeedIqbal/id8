@@ -41,5 +41,8 @@ class Settings(BaseSettings):
     stitch_access_token: str = ""
     google_cloud_project: str = ""
 
+    # Codegen Template
+    codegen_template_dir: str = "exampleApp/example"
+
 
 settings = Settings()

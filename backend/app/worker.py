@@ -46,16 +46,19 @@ async def _process_pending_runs(db: AsyncSession) -> int:
     )
     runs = result.scalars().all()
 
+    processed_count = 0
     for run in runs:
-        logger.info("Processing pending run=%s at node=%s", run.id, run.current_node)
         try:
-            await run_orchestrator(run.id, db)
+            acquired = await run_orchestrator(run.id, db)
+            if acquired:
+                logger.info("Processed pending run=%s at node=%s", run.id, run.current_node)
+                processed_count += 1
             await db.commit()
         except Exception:
             logger.exception("Error processing run=%s", run.id)
             await db.rollback()
 
-    return len(runs)
+    return processed_count
 
 
 async def _process_retry_jobs(db: AsyncSession) -> int:
@@ -71,12 +74,14 @@ async def _process_retry_jobs(db: AsyncSession) -> int:
     )
     jobs = result.scalars().all()
 
+    processed_count = 0
     for job in jobs:
-        logger.info("Processing retry job=%s for run=%s node=%s", job.id, job.run_id, job.node_name)
         try:
             acquired = await run_orchestrator(job.run_id, db)
             if acquired:
+                logger.info("Processed retry job=%s for run=%s node=%s", job.id, job.run_id, job.node_name)
                 job.processed_at = datetime.now(tz=UTC)
+                processed_count += 1
                 await db.commit()
             else:
                 # Keep the retry job pending if another worker currently owns the run lock.
@@ -85,7 +90,7 @@ async def _process_retry_jobs(db: AsyncSession) -> int:
             logger.exception("Error processing retry job=%s", job.id)
             await db.rollback()
 
-    return len(jobs)
+    return processed_count
 
 
 async def main() -> None:
