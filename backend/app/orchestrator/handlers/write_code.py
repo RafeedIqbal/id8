@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import posixpath
 import re
 import subprocess
@@ -36,6 +37,9 @@ _GENERATION_PHASES = ("shared_foundation", "pages")
 _MAX_REPAIR_CONTEXT_FILES = 40
 _MAX_REPAIR_FILE_CHARS = 4000
 _NPM_LOCKFILE_TIMEOUT_SECONDS = 180
+_PROJECT_CHECK_TIMEOUT_SECONDS = 300
+_MAX_COMMAND_ERROR_LINES = 30
+_MAX_COMMAND_ERROR_CHARS = 4000
 _DEPENDENCY_MANIFESTS = (
     "package.json",
     "requirements.txt",
@@ -147,22 +151,7 @@ class WriteCodeHandler(NodeHandler):
         # 2. Check for security gate feedback (remediation loop) or validation feedback
         feedback = await _load_security_feedback(ctx)
 
-        validation_errors_from_prev = []
         code_snapshot = _clean_artifact_content(ctx.previous_artifacts.get("code_snapshot"))
-        if code_snapshot:
-            meta = code_snapshot.get("__code_metadata", {})
-            validation_errors_from_prev = meta.get("validation_errors", [])
-            if validation_errors_from_prev:
-                val_text = "\n".join(f"- {err}" for err in validation_errors_from_prev)
-                val_feedback = f"Previous code snapshot validation failed with the following errors:\n{val_text}"
-                feedback = f"{feedback}\n\n{val_feedback}" if feedback else val_feedback
-
-        validation_loop_count = int(ctx.workflow_payload.get("validation_loop_count", 0))
-        if validation_errors_from_prev and validation_loop_count >= 2:
-            return NodeResult(
-                outcome="failure",
-                error="Exceeded maximum validation repair loops (2 attempts).",
-            )
 
         # 3. Build generation context.
         profile = resolve_profile(ctx.current_node)
@@ -296,7 +285,10 @@ class WriteCodeHandler(NodeHandler):
         )
         merged_files_dict = {f.path: f.model_dump() for f in merged_files}
         snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
-        validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
+        execution_errors = []
+        if not dependency_resolution_errors:
+            execution_errors = _run_frontend_project_checks(merged_files)
+        validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data) + execution_errors
         for _ in range(_MAX_VALIDATION_REPAIR_ATTEMPTS):
             if not validation_errors:
                 break
@@ -384,7 +376,10 @@ class WriteCodeHandler(NodeHandler):
             )
             merged_files_dict = {f.path: f.model_dump() for f in merged_files}
             snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
-            validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
+            execution_errors = []
+            if not dependency_resolution_errors:
+                execution_errors = _run_frontend_project_checks(merged_files)
+            validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data) + execution_errors
 
         if validation_errors:
             remediation = "\n".join(f"- {err}" for err in validation_errors)
@@ -399,13 +394,12 @@ class WriteCodeHandler(NodeHandler):
                 "validation_errors": validation_errors,
             }
             return NodeResult(
-                outcome="failed",
+                outcome="failure",
                 error="Code snapshot validation failed. Remediation required:\n" + remediation,
                 artifact_data=snapshot_data,  # Return it so orchestrator saves the intermediate state
                 context_updates={
                     "validation_errors": validation_errors,
                     "repair_attempted": repair_attempted,
-                    "validation_loop_count": validation_loop_count + 1,
                 },
             )
 
@@ -431,6 +425,7 @@ class WriteCodeHandler(NodeHandler):
             "phase_file_counts": phase_file_counts,
             "repair_attempted": repair_attempted,
             "repair_updates": phase_file_counts.get("repair", 0),
+            "server_checks": ["npm install", "npm run lint", "npm run build"],
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
@@ -775,7 +770,9 @@ def _ordered_package_requirements(all_requirements: dict[str, dict[str, str]]) -
     )
 
 
-def _normalize_package_requirements(package_requirements: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[str]]:
+def _normalize_package_requirements(
+    package_requirements: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[str]]:
     """Validate package requirements before handing them to npm."""
     normalized: dict[str, dict[str, str]] = {}
     errors: list[str] = []
@@ -953,6 +950,107 @@ def _run_npm_install_command(
         timeout=_NPM_LOCKFILE_TIMEOUT_SECONDS,
         cwd=cwd,
     )
+
+
+def _run_frontend_project_checks(files: list[Any]) -> list[str]:
+    """Run install, lint, and build in a temp workspace and return actionable failures."""
+    package_file = next((file for file in files if getattr(file, "path", "") == "package.json"), None)
+    if package_file is None:
+        return []
+
+    env = os.environ.copy()
+    env["CI"] = "1"
+    env["NEXT_TELEMETRY_DISABLED"] = "1"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _write_snapshot_files(tmpdir, files)
+
+        install_result, install_error = _run_project_command(
+            ["npm", "install"],
+            cwd=tmpdir,
+            env=env,
+            timeout=_PROJECT_CHECK_TIMEOUT_SECONDS,
+        )
+        if install_error:
+            return [install_error]
+        if install_result is None:
+            return ["npm install failed without producing a subprocess result"]
+        if install_result.returncode != 0:
+            return [f"npm install failed: {_summarize_command_output(install_result.stderr or install_result.stdout)}"]
+
+        errors: list[str] = []
+        for command in (["npm", "run", "lint"], ["npm", "run", "build"]):
+            result, command_error = _run_project_command(
+                command,
+                cwd=tmpdir,
+                env=env,
+                timeout=_PROJECT_CHECK_TIMEOUT_SECONDS,
+            )
+            if command_error:
+                errors.append(command_error)
+                continue
+            if result is None:
+                errors.append(f"{' '.join(command)} failed without producing a subprocess result")
+                continue
+            if result.returncode != 0:
+                errors.append(
+                    f"{' '.join(command)} failed: {_summarize_command_output(result.stderr or result.stdout)}"
+                )
+
+        return errors
+
+
+def _write_snapshot_files(root_dir: str, files: list[Any]) -> None:
+    """Write snapshot files into a temp workspace for command verification."""
+    root = Path(root_dir)
+    for file in files:
+        rel_path = str(getattr(file, "path", "")).strip()
+        content = str(getattr(file, "content", ""))
+        if not rel_path:
+            continue
+        destination = root / rel_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
+
+
+def _run_project_command(
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    timeout: int,
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    """Run a project verification command and normalize subprocess failures."""
+    label = " ".join(command)
+    try:
+        return (
+            subprocess.run(  # noqa: S603
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                env=env,
+            ),
+            None,
+        )
+    except FileNotFoundError:
+        return None, f"{label} could not run because npm is not installed on the server"
+    except subprocess.TimeoutExpired:
+        return None, f"{label} timed out after {timeout} seconds"
+
+
+def _summarize_command_output(output: str) -> str:
+    """Condense a command failure into a repair-friendly single line."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return "command exited with no output"
+
+    relevant = lines[-_MAX_COMMAND_ERROR_LINES:]
+    summary = " | ".join(relevant)
+    if len(summary) > _MAX_COMMAND_ERROR_CHARS:
+        summary = summary[: _MAX_COMMAND_ERROR_CHARS - 14].rstrip() + " ...truncated..."
+    return summary
 
 
 def _summarize_npm_failure(output: str) -> str:

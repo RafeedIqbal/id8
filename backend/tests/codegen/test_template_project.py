@@ -4,8 +4,6 @@ from pathlib import Path
 import pytest
 
 from app.codegen.template_project import (
-    IGNORED_DIRS,
-    IGNORED_FILES,
     get_template_filepaths,
     infer_language,
     load_template_tree,

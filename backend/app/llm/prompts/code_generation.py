@@ -75,7 +75,7 @@ STRICT RULES:
    (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
 4. Package Requirements: If you need a new dependency, declare it in `package_requirements`.
    DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
-   Only provide package names, target sections, and short reasons. Do NOT choose versions.
+   Only provide package names, target sections, and short reasons. DO NOT choose versions.
 5. Static Data Only: All data comes from typed `data/` files. No backend APIs,
    no server components fetching external data, no secrets.
 6. Polish & Interactivity: UI must be highly interactive (client-side state), fully

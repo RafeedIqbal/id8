@@ -665,7 +665,7 @@ def _is_screen_resource_name(raw: str) -> bool:
 
 
 def _project_url(project_id: str) -> str:
-    return f"https://stitch.withgoogle.com/project/{project_id}"
+    return f"https://stitch.withgoogle.com/projects/{project_id}"
 
 
 def _resolve_model_id(constraints: dict[str, Any]) -> str:

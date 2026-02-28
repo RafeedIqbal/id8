@@ -162,7 +162,7 @@ export function Sidebar() {
     if (direct) return direct;
     const projectId = designMetadata.stitch_project_id;
     if (typeof projectId === "string" && projectId.trim()) {
-      return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId)}`;
+      return `https://stitch.withgoogle.com/projects/${encodeURIComponent(projectId)}`;
     }
     return undefined;
   })();

@@ -12,6 +12,8 @@ from app.orchestrator.handlers.write_code import (
     _infer_test_command,
     _is_path_allowed,
     _resolve_npm_package_files,
+    _run_frontend_project_checks,
+    _summarize_command_output,
     _summarize_npm_failure,
     _validate_code_snapshot,
 )
@@ -217,7 +219,7 @@ def test_resolve_npm_package_files_surfaces_resolution_errors(monkeypatch, tmp_p
             path="package.json",
             content=(
                 '{"name":"example","private":true,"dependencies":{"next":"16.1.6","react":"19.2.3",'
-                '"react-dom":"19.2.3","lucide-react":"0.344.0"}}\n'
+                '"react-dom":"19.2.3"}}\n'
             ),
             language="json",
         ),
@@ -245,6 +247,79 @@ def test_summarize_npm_failure_deduplicates_noise():
     )
 
     assert summary == "code ERESOLVE | Found: react@19.2.3"
+
+
+def test_run_frontend_project_checks_reports_lint_and_build_errors(monkeypatch, tmp_path):
+    class FakeTemporaryDirectory:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, capture_output, text, timeout, cwd, env):
+        commands.append(command)
+        assert capture_output is True
+        assert text is True
+        assert timeout == 300
+        assert cwd == str(tmp_path)
+        assert env["CI"] == "1"
+        assert env["NEXT_TELEMETRY_DISABLED"] == "1"
+
+        if command == ["npm", "install"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command == ["npm", "run", "lint"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="src/app/page.tsx\n  8:10  error  Missing semicolon\n",
+            )
+        if command == ["npm", "run", "build"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Failed to compile.\n./components/card.tsx:12:5\nType error: string is not assignable.\n",
+            )
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.tempfile.TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr("app.orchestrator.handlers.write_code.subprocess.run", fake_run)
+
+    errors = _run_frontend_project_checks(
+        [
+            CodeFile(
+                path="package.json",
+                content='{"name":"example","scripts":{"lint":"next lint","build":"next build"}}\n',
+                language="json",
+            ),
+            CodeFile(
+                path="app/page.tsx",
+                content="export default function Page() { return null; }\n",
+                language="typescript",
+            ),
+        ]
+    )
+
+    assert commands == [
+        ["npm", "install"],
+        ["npm", "run", "lint"],
+        ["npm", "run", "build"],
+    ]
+    assert errors == [
+        "npm run lint failed: src/app/page.tsx | 8:10  error  Missing semicolon",
+        "npm run build failed: Failed to compile. | ./components/card.tsx:12:5 | Type error: string is not assignable.",
+    ]
+
+
+def test_summarize_command_output_truncates_to_recent_lines():
+    summary = _summarize_command_output(
+        "\n".join(f"line {idx}" for idx in range(40))
+    )
+
+    assert "line 0" not in summary
+    assert "line 39" in summary
 
 
 @pytest.mark.asyncio
@@ -334,6 +409,7 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
         "app.orchestrator.handlers.write_code._resolve_npm_package_files",
         lambda files, package_requirements: (files, []),
     )
+    monkeypatch.setattr("app.orchestrator.handlers.write_code._run_frontend_project_checks", lambda files: [])
     monkeypatch.setattr("app.config.settings.codegen_template_dir", str(template_dir))
 
     ctx = RunContext(

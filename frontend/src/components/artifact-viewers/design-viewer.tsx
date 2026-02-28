@@ -47,7 +47,7 @@ function extractStitchProjectUrl(meta: Record<string, unknown>): string | null {
   if (direct && direct.trim()) return direct.trim();
   const projectId = safeString(meta.stitch_project_id);
   if (projectId && projectId.trim()) {
-    return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId.trim())}`;
+    return `https://stitch.withgoogle.com/projects/${encodeURIComponent(projectId.trim())}`;
   }
   return null;
 }
@@ -199,8 +199,8 @@ export function DesignViewer({ artifact }: { artifact: ProjectArtifact }) {
                           <td className="py-2.5 text-text-3 text-xs font-mono-display break-words">
                             {(comp.properties ?? comp.props)
                               ? Object.entries(comp.properties ?? comp.props ?? {})
-                                  .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-                                  .join(", ")
+                                .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                                .join(", ")
                               : "—"}
                           </td>
                         </tr>

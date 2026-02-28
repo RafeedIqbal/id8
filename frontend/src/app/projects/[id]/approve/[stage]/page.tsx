@@ -86,7 +86,7 @@ function extractStitchProjectUrl(artifact?: ProjectArtifact): string | null {
   if (typeof direct === "string" && direct.trim()) return direct.trim();
   const projectId = meta.stitch_project_id;
   if (typeof projectId === "string" && projectId.trim()) {
-    return `https://stitch.withgoogle.com/project/${encodeURIComponent(projectId.trim())}`;
+    return `https://stitch.withgoogle.com/projects/${encodeURIComponent(projectId.trim())}`;
   }
   return null;
 }
