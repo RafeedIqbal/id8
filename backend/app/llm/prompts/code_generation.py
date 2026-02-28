@@ -38,12 +38,12 @@ CORE MANDATES:
    Ensure strictly mobile-first, responsive layouts.
 
 DEPENDENCY RULES:
-- If you need a new dependency, declare it in `package_changes`.
+- If you need a new dependency, declare it in `package_requirements`.
 - DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
-- Every imported package MUST be explicitly defined in `package_changes` if not in template `package.json`.
-- Choose dependency versions that are installable together with the template's
-  Next.js/React stack. If a package has React or Next peer dependencies,
-  they must explicitly support React 19 / Next 16.
+- Every imported package MUST be explicitly declared in `package_requirements`
+  if it is not already in the template `package.json`.
+- DO NOT choose versions. The server resolves package versions and generates
+  the working `package.json` and `package-lock.json`.
 
 OUTPUT FORMAT:
 Return a single, purely valid JSON object.
@@ -54,10 +54,9 @@ The JSON must perfectly match this schema:
   "files": [
     {"path": "relative/path/to/file.ts", "content": "raw file contents", "language": "typescript"}
   ],
-  "package_changes": {
-    "dependencies": {},
-    "devDependencies": {}
-  }
+  "package_requirements": [
+    {"name": "lucide-react", "section": "dependencies", "reason": "Icon set for dashboards"}
+  ]
 }
 """
 
@@ -74,9 +73,9 @@ STRICT RULES:
    configurations (like next.config.ts); they are managed by the template.
 3. Zero Errors: Code MUST pass `tsc --noEmit` and `npm run lint`. Use strict TypeScript
    (no `any`). Use `'use client'` where hooks are required. Prevent hydration mismatches.
-4. Package Additions: If you need a new dependency, declare it in `package_changes`.
+4. Package Requirements: If you need a new dependency, declare it in `package_requirements`.
    DO NOT EVER output a replacement `package.json` file. Template packages win on conflicts.
-   Any package with React/Next peer dependencies must explicitly support the template stack (React 19 / Next 16).
+   Only provide package names, target sections, and short reasons. Do NOT choose versions.
 5. Static Data Only: All data comes from typed `data/` files. No backend APIs,
    no server components fetching external data, no secrets.
 6. Polish & Interactivity: UI must be highly interactive (client-side state), fully
@@ -88,10 +87,9 @@ Return ONLY a valid, unescaped JSON object. NO markdown fences (```json). NO com
 Schema:
 {
   "files": [{"path": "string", "content": "string", "language": "string"}],
-  "package_changes": {
-    "dependencies": {},
-    "devDependencies": {}
-  }
+  "package_requirements": [
+    {"name": "string", "section": "dependencies|devDependencies", "reason": "string"}
+  ]
 }
 """
 
@@ -163,7 +161,7 @@ Phase Requirements:
 {previous_code_block}
 
 CRITICAL EXECUTION STEPS:
-1. Generate ONLY the files and package additions for the **{chunk_label}** phase.
+1. Generate ONLY the files and package requirements for the **{chunk_label}** phase.
 2. Ensure all exports align with the template inventory and generated files.
 3. Verify that there are no TS errors, linting warnings, or missing dependencies.
 4. Return ONLY valid JSON matching the exact schema. No markdown, no backend code.
@@ -174,7 +172,7 @@ _CHUNK_REQUIREMENTS = {
         "Generate strict TypeScript interfaces in `types/`, hardcoded dummy data arrays in `data/`, "
         "reusable UI components in `components/`, and generic utility helpers in `lib/`. "
         "Also include any overrides to the template shell (e.g. `app/layout.tsx`, `app/globals.css`). "
-        "Include realistic mock data (5-15 items per entity). Output package additions for components used. "
+        "Include realistic mock data (5-15 items per entity). Output package requirements for components used. "
         "ABSOLUTELY NO API routes, server actions, or database logic."
     ),
     "pages": (
@@ -183,7 +181,7 @@ _CHUNK_REQUIREMENTS = {
         "Include `'use client'` directives on interactive components if they hold state. "
         "Ensure all filters, search, sort, modals, and tabs work purely via local state. "
         "Import and utilize the dummy data from `data/` and components from `components/`. "
-        "Output package additions if distinct page-specific libraries are needed."
+        "Output package requirements if distinct page-specific libraries are needed."
     ),
     "repair": (
         "Review the previous code and security feedback. Output ONLY the files that must be corrected to fix "

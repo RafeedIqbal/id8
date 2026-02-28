@@ -6,13 +6,13 @@ JSON produced by the model.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-def _default_package_changes() -> dict[str, dict[str, str]]:
-    return {"dependencies": {}, "devDependencies": {}}
+def _default_package_requirements() -> list["PackageRequirement"]:
+    return []
 
 
 class CodeFile(BaseModel):
@@ -23,14 +23,52 @@ class CodeFile(BaseModel):
     language: str = Field(..., description="Language identifier: python, typescript, sql, etc.")
 
 
+class PackageRequirement(BaseModel):
+    """A package the model needs, without allowing it to choose the version."""
+
+    name: str = Field(..., description='Package name, e.g. "lucide-react"')
+    section: Literal["dependencies", "devDependencies"] = Field(
+        default="dependencies",
+        description='Dependency section, either "dependencies" or "devDependencies"',
+    )
+    reason: str = Field(
+        default="",
+        description="Short justification for why the package is needed",
+    )
+
+
 class CodeChunkContent(BaseModel):
     """Single phased generation chunk."""
 
     files: list[CodeFile] = Field(..., description="Files generated for the current phase")
-    package_changes: dict[str, dict[str, str]] = Field(
-        default_factory=_default_package_changes,
-        description="Package additions. Only add new packages, never return a full package.json.",
+    package_requirements: list[PackageRequirement] = Field(
+        default_factory=_default_package_requirements,
+        description="Package intents. Only add package names and sections, never versions or a full package.json.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_package_changes(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "package_requirements" in data:
+            return data
+
+        legacy = data.get("package_changes")
+        if not isinstance(legacy, dict):
+            return data
+
+        requirements: list[dict[str, str]] = []
+        for section in ("dependencies", "devDependencies"):
+            packages = legacy.get(section, {})
+            if not isinstance(packages, dict):
+                continue
+            for name in packages:
+                requirements.append({"name": str(name), "section": section})
+
+        upgraded = dict(data)
+        upgraded["package_requirements"] = requirements
+        return upgraded
 
 
 class CodeSnapshotContent(BaseModel):

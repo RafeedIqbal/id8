@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from app.config import settings
@@ -95,39 +94,8 @@ def load_template_tree(template_dir: str) -> list[CodeFile]:
 
     return files
 
-
-def merge_package_json(template_content: str, package_additions: dict[str, dict[str, str]]) -> str:
-    """Merge AI package additions into the template package.json.
-
-    Raises ValueError if the model attempts to override an existing version.
-    """
-    try:
-        pkg = json.loads(template_content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Template package.json is invalid JSON: {e}")
-
-    for section in ["dependencies", "devDependencies"]:
-        if section not in package_additions:
-            continue
-
-        if section not in pkg:
-            pkg[section] = {}
-
-        for name, version in package_additions[section].items():
-            if name in pkg[section] and pkg[section][name] != version:
-                raise ValueError(
-                    f"Blocked modification of existing template package: {name} "
-                    f"(template: {pkg[section][name]}, requested: {version})"
-                )
-            pkg[section][name] = version
-
-    return json.dumps(pkg, indent=2) + "\n"
-
-
-def merge_project(
-    template_dir: str, ai_files: list[CodeFile], package_additions: dict[str, dict[str, str]]
-) -> list[CodeFile]:
-    """Merge AI-generated files and package additions into the template tree.
+def merge_project(template_dir: str, ai_files: list[CodeFile]) -> list[CodeFile]:
+    """Merge AI-generated files into the template tree.
 
     Returns the fully merged list of CodeFiles, sorted by path.
     """
@@ -137,12 +105,6 @@ def merge_project(
     # Process AI file deltas (new or override)
     for ai_file in ai_files:
         merged_map[ai_file.path] = ai_file
-
-    # Merge package.json
-    if "package.json" in merged_map:
-        template_pkg = merged_map["package.json"].content
-        merged_pkg_content = merge_package_json(template_pkg, package_additions)
-        merged_map["package.json"].content = merged_pkg_content
 
     # Sort and return
     return sorted(list(merged_map.values()), key=lambda x: x.path)

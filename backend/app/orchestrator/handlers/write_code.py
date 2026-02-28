@@ -67,6 +67,7 @@ _TS_IMPORT_RE = re.compile(
 """
 )
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+")
+_NPM_PACKAGE_NAME_RE = re.compile(r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+$")
 
 _ALLOWED_OVERRIDE_PATHS = {"app/page.tsx", "app/layout.tsx", "app/globals.css"}
 _ALLOWED_NEW_DIRS = (
@@ -205,7 +206,7 @@ class WriteCodeHandler(NodeHandler):
 
         # 5. Generate files in structured chunks.
         files_by_path: dict[str, dict[str, str]] = {}
-        all_package_additions: dict[str, dict[str, str]] = {"dependencies": {}, "devDependencies": {}}
+        all_package_requirements: dict[str, dict[str, str]] = {}
         phase_file_counts: dict[str, int] = {}
         last_llm_response: Any | None = None
         total_prompt_tokens = 0
@@ -221,7 +222,7 @@ class WriteCodeHandler(NodeHandler):
                 generated_files=list(files_by_path.values()),
                 template_context=template_context,
             )
-            chunk_files, chunk_pkg, llm_response, chunk_error = await _generate_chunk(
+            chunk_files, chunk_requirements, llm_response, chunk_error = await _generate_chunk(
                 profile=profile,
                 node_name=ctx.current_node,
                 phase=phase,
@@ -271,9 +272,7 @@ class WriteCodeHandler(NodeHandler):
                     files_by_path[path] = normalized
                     phase_file_counts[phase] += 1
 
-            for sec in ["dependencies", "devDependencies"]:
-                for pkg_name, pkg_ver in chunk_pkg.get(sec, {}).items():
-                    all_package_additions[sec][pkg_name] = pkg_ver
+            _merge_package_requirements(all_package_requirements, chunk_requirements)
 
         if not files_by_path:
             return NodeResult(
@@ -284,14 +283,17 @@ class WriteCodeHandler(NodeHandler):
         # 6. Assemble and validate the full merged snapshot.
         ai_code_files = [CodeFile(**f) for f in files_by_path.values()]
         try:
-            merged_files = merge_project(template_dir, ai_code_files, all_package_additions)
+            merged_files = merge_project(template_dir, ai_code_files)
         except ValueError as e:
             return NodeResult(
                 outcome="failure",
                 error=f"Template merge failed: {e}",
             )
 
-        merged_files, dependency_resolution_errors = _materialize_npm_lockfile(merged_files)
+        merged_files, dependency_resolution_errors = _resolve_npm_package_files(
+            merged_files,
+            _ordered_package_requirements(all_package_requirements),
+        )
         merged_files_dict = {f.path: f.model_dump() for f in merged_files}
         snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
         validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
@@ -304,7 +306,7 @@ class WriteCodeHandler(NodeHandler):
                 validation_errors=validation_errors,
                 files_by_path=merged_files_dict,
             )
-            repair_files, repair_pkg, repair_llm_response, repair_error = await _generate_chunk(
+            repair_files, repair_requirements, repair_llm_response, repair_error = await _generate_chunk(
                 profile=profile,
                 node_name=f"{ctx.current_node}:repair",
                 phase="repair",
@@ -364,13 +366,11 @@ class WriteCodeHandler(NodeHandler):
                     files_by_path[path] = normalized
                     phase_file_counts["repair"] += 1
 
-            for sec in ["dependencies", "devDependencies"]:
-                for pkg_name, pkg_ver in repair_pkg.get(sec, {}).items():
-                    all_package_additions[sec][pkg_name] = pkg_ver
+            _merge_package_requirements(all_package_requirements, repair_requirements)
 
             ai_code_files = [CodeFile(**f) for f in files_by_path.values()]
             try:
-                merged_files = merge_project(template_dir, ai_code_files, all_package_additions)
+                merged_files = merge_project(template_dir, ai_code_files)
             except ValueError as e:
                 return NodeResult(
                     outcome="failure",
@@ -378,7 +378,10 @@ class WriteCodeHandler(NodeHandler):
                     context_updates={"validation_errors": validation_errors, "repair_attempted": True},
                 )
 
-            merged_files, dependency_resolution_errors = _materialize_npm_lockfile(merged_files)
+            merged_files, dependency_resolution_errors = _resolve_npm_package_files(
+                merged_files,
+                _ordered_package_requirements(all_package_requirements),
+            )
             merged_files_dict = {f.path: f.model_dump() for f in merged_files}
             snapshot_data = _assemble_code_snapshot(list(merged_files_dict.values()))
             validation_errors = dependency_resolution_errors + _validate_code_snapshot(snapshot_data)
@@ -420,7 +423,7 @@ class WriteCodeHandler(NodeHandler):
             "ai_delta_file_count": len(files_by_path),
             "merged_file_count": len(merged_files),
             "allowed_override_paths": list(_ALLOWED_OVERRIDE_PATHS),
-            "package_additions": all_package_additions,
+            "package_requirements": _ordered_package_requirements(all_package_requirements),
             "is_authoritative_merged_tree": True,
             "file_count": len(snapshot_data.get("files", [])),
             "total_loc": sum(f.get("content", "").count("\n") + 1 for f in snapshot_data.get("files", [])),
@@ -650,7 +653,7 @@ async def _generate_chunk(
     system_prompt: str,
     user_prompt: str,
     timeout: float | None = 1200.0,
-) -> tuple[list[dict[str, str]], dict[str, dict[str, str]], Any | None, str | None]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]], Any | None, str | None]:
     """Run a generation phase with parse retries and return files."""
     last_error: str | None = None
     last_response: Any | None = None
@@ -677,7 +680,7 @@ async def _generate_chunk(
         if chunk_data is not None:
             return (
                 chunk_data.get("files", []),
-                chunk_data.get("package_changes", {"dependencies": {}, "devDependencies": {}}),
+                chunk_data.get("package_requirements", []),
                 llm_response,
                 None,
             )
@@ -691,7 +694,7 @@ async def _generate_chunk(
             parse_error,
         )
 
-    return [], {"dependencies": {}, "devDependencies": {}}, last_response, last_error or "Unknown parse failure"
+    return [], [], last_response, last_error or "Unknown parse failure"
 
 
 def _parse_chunk_response(content: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -736,36 +739,163 @@ def _assemble_code_snapshot(files: list[dict[str, str]]) -> dict[str, Any]:
     return snapshot.model_dump(by_alias=True)
 
 
-def _materialize_npm_lockfile(files: list[Any]) -> tuple[list[Any], list[str]]:
-    """Resolve npm dependencies and attach a deterministic package-lock.json when possible."""
+def _merge_package_requirements(
+    all_requirements: dict[str, dict[str, str]],
+    new_requirements: list[dict[str, str]],
+) -> None:
+    """Merge package requirements by package name, preferring runtime deps over dev deps."""
+    for requirement in new_requirements:
+        name = str(requirement.get("name", "")).strip()
+        if not name:
+            continue
+
+        section = str(requirement.get("section", "dependencies")).strip() or "dependencies"
+        reason = str(requirement.get("reason", "")).strip()
+
+        existing = all_requirements.get(name)
+        if existing is None:
+            all_requirements[name] = {
+                "name": name,
+                "section": section,
+                "reason": reason,
+            }
+            continue
+
+        if existing.get("section") != "dependencies" and section == "dependencies":
+            existing["section"] = "dependencies"
+        if reason and not existing.get("reason"):
+            existing["reason"] = reason
+
+
+def _ordered_package_requirements(all_requirements: dict[str, dict[str, str]]) -> list[dict[str, str]]:
+    """Return package requirements in stable section/name order."""
+    return sorted(
+        all_requirements.values(),
+        key=lambda item: (item.get("section", "dependencies"), item.get("name", "")),
+    )
+
+
+def _normalize_package_requirements(package_requirements: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate package requirements before handing them to npm."""
+    normalized: dict[str, dict[str, str]] = {}
+    errors: list[str] = []
+
+    for index, requirement in enumerate(package_requirements, start=1):
+        name = str(requirement.get("name", "")).strip()
+        if not name:
+            errors.append(f"package_requirements[{index}] is missing a package name")
+            continue
+        if not _NPM_PACKAGE_NAME_RE.fullmatch(name):
+            errors.append(f"package_requirements[{index}] has an invalid npm package name: '{name}'")
+            continue
+
+        section = str(requirement.get("section", "dependencies")).strip() or "dependencies"
+        if section not in {"dependencies", "devDependencies"}:
+            errors.append(
+                f"package_requirements[{index}] for '{name}' has invalid section '{section}'. "
+                "Use 'dependencies' or 'devDependencies'."
+            )
+            continue
+
+        reason = str(requirement.get("reason", "")).strip()
+        existing = normalized.get(name)
+        if existing is None:
+            normalized[name] = {
+                "name": name,
+                "section": section,
+                "reason": reason,
+            }
+            continue
+
+        if existing["section"] != "dependencies" and section == "dependencies":
+            existing["section"] = "dependencies"
+        if reason and not existing["reason"]:
+            existing["reason"] = reason
+
+    return _ordered_package_requirements(normalized), errors
+
+
+def _resolve_npm_package_files(
+    files: list[Any],
+    package_requirements: list[dict[str, str]],
+) -> tuple[list[Any], list[str]]:
+    """Resolve package requirements into a server-owned package.json and package-lock.json."""
     package_file = next((file for file in files if getattr(file, "path", "") == "package.json"), None)
     if package_file is None:
         return files, []
 
     try:
-        json.loads(package_file.content)
+        base_package_json = json.loads(package_file.content)
     except json.JSONDecodeError as exc:
         return files, [f"package.json is not valid JSON: {exc.msg}"]
+    if not isinstance(base_package_json, dict):
+        return files, ["package.json must contain a JSON object"]
+
+    normalized_requirements, requirement_errors = _normalize_package_requirements(package_requirements)
+    if requirement_errors:
+        return files, requirement_errors
+
+    existing_dependencies = base_package_json.get("dependencies", {})
+    existing_dev_dependencies = base_package_json.get("devDependencies", {})
+    dependency_names: list[str] = []
+    dev_dependency_names: list[str] = []
+
+    for requirement in normalized_requirements:
+        name = requirement["name"]
+        if (
+            isinstance(existing_dependencies, dict)
+            and name in existing_dependencies
+            or isinstance(existing_dev_dependencies, dict)
+            and name in existing_dev_dependencies
+        ):
+            continue
+        if requirement["section"] == "devDependencies":
+            dev_dependency_names.append(name)
+        else:
+            dependency_names.append(name)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "package.json").write_text(package_file.content, encoding="utf-8")
 
         try:
-            result = subprocess.run(  # noqa: S603
-                [
-                    "npm",
-                    "install",
-                    "--package-lock-only",
-                    "--ignore-scripts",
-                    "--no-audit",
-                    "--no-fund",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=_NPM_LOCKFILE_TIMEOUT_SECONDS,
-                cwd=tmpdir,
-            )
+            if dependency_names:
+                result = _run_npm_install_command(
+                    cwd=tmpdir,
+                    package_names=dependency_names,
+                    save_dev=False,
+                )
+                if result.returncode != 0:
+                    failure_detail = _summarize_npm_failure(result.stderr or result.stdout)
+                    requested = ", ".join(dependency_names)
+                    return files, [
+                        "npm dependency resolution failed while resolving dependencies "
+                        f"({requested}): {failure_detail}"
+                    ]
+
+            if dev_dependency_names:
+                result = _run_npm_install_command(
+                    cwd=tmpdir,
+                    package_names=dev_dependency_names,
+                    save_dev=True,
+                )
+                if result.returncode != 0:
+                    failure_detail = _summarize_npm_failure(result.stderr or result.stdout)
+                    requested = ", ".join(dev_dependency_names)
+                    return files, [
+                        "npm dependency resolution failed while resolving devDependencies "
+                        f"({requested}): {failure_detail}"
+                    ]
+
+            if not dependency_names and not dev_dependency_names:
+                result = _run_npm_install_command(
+                    cwd=tmpdir,
+                    package_names=[],
+                    save_dev=False,
+                )
+                if result.returncode != 0:
+                    failure_detail = _summarize_npm_failure(result.stderr or result.stdout)
+                    return files, [f"npm dependency resolution failed for package.json: {failure_detail}"]
         except FileNotFoundError:
             return files, ["npm is required to verify Vercel dependency resolution but is not installed"]
         except subprocess.TimeoutExpired:
@@ -774,20 +904,55 @@ def _materialize_npm_lockfile(files: list[Any]) -> tuple[list[Any], list[str]]:
                 f"after {_NPM_LOCKFILE_TIMEOUT_SECONDS} seconds"
             ]
 
-        if result.returncode != 0:
-            failure_detail = _summarize_npm_failure(result.stderr or result.stdout)
-            return files, [f"npm dependency resolution failed for package.json: {failure_detail}"]
-
+        resolved_package_json_path = tmpdir_path / "package.json"
         lockfile_path = tmpdir_path / "package-lock.json"
+        if not resolved_package_json_path.is_file():
+            return files, ["npm dependency resolution succeeded but did not write package.json"]
         if not lockfile_path.is_file():
             return files, ["npm dependency resolution succeeded but did not create package-lock.json"]
 
+        resolved_package_json = resolved_package_json_path.read_text(encoding="utf-8")
         lockfile_content = lockfile_path.read_text(encoding="utf-8")
 
     file_type = type(package_file)
-    updated_files = [file for file in files if getattr(file, "path", "") != "package-lock.json"]
+    updated_files = [
+        file
+        for file in files
+        if getattr(file, "path", "") not in {"package.json", "package-lock.json"}
+    ]
+    updated_files.append(file_type(path="package.json", content=resolved_package_json, language="json"))
     updated_files.append(file_type(path="package-lock.json", content=lockfile_content, language="json"))
     return sorted(updated_files, key=lambda file: str(getattr(file, "path", ""))), []
+
+
+def _run_npm_install_command(
+    *,
+    cwd: str,
+    package_names: list[str],
+    save_dev: bool,
+) -> subprocess.CompletedProcess[str]:
+    """Run npm install in lockfile-only mode for the requested package set."""
+    command = [
+        "npm",
+        "install",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+    ]
+    if save_dev:
+        command.append("--save-dev")
+    if package_names:
+        command.append("--save-exact")
+        command.extend(package_names)
+
+    return subprocess.run(  # noqa: S603
+        command,
+        capture_output=True,
+        text=True,
+        timeout=_NPM_LOCKFILE_TIMEOUT_SECONDS,
+        cwd=cwd,
+    )
 
 
 def _summarize_npm_failure(output: str) -> str:

@@ -11,11 +11,11 @@ from app.orchestrator.handlers.write_code import (
     _infer_entry_point,
     _infer_test_command,
     _is_path_allowed,
-    _materialize_npm_lockfile,
+    _resolve_npm_package_files,
     _summarize_npm_failure,
     _validate_code_snapshot,
 )
-from app.schemas.code_snapshot import CodeFile
+from app.schemas.code_snapshot import CodeChunkContent, CodeFile
 
 
 def test_is_path_allowed():
@@ -76,7 +76,39 @@ def test_validate_code_snapshot_rejects_dual_app_trees():
     assert "Merged snapshot cannot contain both root-level 'app/' and 'src/app/' trees" in errors
 
 
-def test_materialize_npm_lockfile_adds_lockfile(monkeypatch, tmp_path):
+def test_code_chunk_content_upgrades_legacy_package_changes():
+    content = CodeChunkContent.model_validate(
+        {
+            "files": [],
+            "package_changes": {
+                "dependencies": {"lucide-react": "^1.0.0"},
+                "devDependencies": {"vitest": "^3.0.0"},
+            },
+        }
+    )
+
+    assert [item.model_dump() for item in content.package_requirements] == [
+        {"name": "lucide-react", "section": "dependencies", "reason": ""},
+        {"name": "vitest", "section": "devDependencies", "reason": ""},
+    ]
+
+
+def test_resolve_npm_package_files_generates_server_owned_manifest(monkeypatch, tmp_path):
+    expected_package_json = (
+        '{\n'
+        '  "name": "example",\n'
+        '  "private": true,\n'
+        '  "dependencies": {\n'
+        '    "next": "16.1.6",\n'
+        '    "react": "19.2.3",\n'
+        '    "react-dom": "19.2.3",\n'
+        '    "lucide-react": "0.542.0"\n'
+        "  },\n"
+        '  "devDependencies": {\n'
+        '    "vitest": "3.2.4"\n'
+        "  }\n"
+        "}\n"
+    )
     expected_lockfile = '{\n  "name": "example",\n  "lockfileVersion": 3\n}\n'
 
     class FakeTemporaryDirectory:
@@ -86,19 +118,15 @@ def test_materialize_npm_lockfile_adds_lockfile(monkeypatch, tmp_path):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+    commands: list[list[str]] = []
+
     def fake_run(cmd, capture_output, text, timeout, cwd):
-        assert cmd == [
-            "npm",
-            "install",
-            "--package-lock-only",
-            "--ignore-scripts",
-            "--no-audit",
-            "--no-fund",
-        ]
+        commands.append(cmd)
         assert capture_output is True
         assert text is True
         assert timeout == 180
         assert cwd == str(tmp_path)
+        (tmp_path / "package.json").write_text(expected_package_json, encoding="utf-8")
         (tmp_path / "package-lock.json").write_text(expected_lockfile, encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -121,15 +149,46 @@ def test_materialize_npm_lockfile_adds_lockfile(monkeypatch, tmp_path):
         ),
     ]
 
-    updated_files, errors = _materialize_npm_lockfile(files)
+    updated_files, errors = _resolve_npm_package_files(
+        files,
+        [
+            {"name": "lucide-react", "section": "dependencies", "reason": "icons"},
+            {"name": "vitest", "section": "devDependencies", "reason": "tests"},
+        ]
+    )
 
     assert errors == []
+    assert commands == [
+        [
+            "npm",
+            "install",
+            "--package-lock-only",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--save-exact",
+            "lucide-react",
+        ],
+        [
+            "npm",
+            "install",
+            "--package-lock-only",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--save-dev",
+            "--save-exact",
+            "vitest",
+        ],
+    ]
+    package_json = next(file for file in updated_files if file.path == "package.json")
+    assert package_json.content == expected_package_json
     lockfile = next(file for file in updated_files if file.path == "package-lock.json")
     assert lockfile.content == expected_lockfile
     assert lockfile.language == "json"
 
 
-def test_materialize_npm_lockfile_surfaces_resolution_errors(monkeypatch, tmp_path):
+def test_resolve_npm_package_files_surfaces_resolution_errors(monkeypatch, tmp_path):
     class FakeTemporaryDirectory:
         def __enter__(self):
             return str(tmp_path)
@@ -164,11 +223,14 @@ def test_materialize_npm_lockfile_surfaces_resolution_errors(monkeypatch, tmp_pa
         ),
     ]
 
-    updated_files, errors = _materialize_npm_lockfile(files)
+    updated_files, errors = _resolve_npm_package_files(
+        files,
+        [{"name": "lucide-react", "section": "dependencies", "reason": "icons"}],
+    )
 
     assert updated_files == files
     assert errors == [
-        "npm dependency resolution failed for package.json: "
+        "npm dependency resolution failed while resolving dependencies (lucide-react): "
         'code ERESOLVE | ERESOLVE unable to resolve dependency tree | Found: react@19.2.3 | '
         'Could not resolve dependency: | peer react@"^18.0.0" from lucide-react@0.344.0'
     ]
@@ -241,7 +303,7 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
     responses = iter(
         [
             SimpleNamespace(
-                content='{"files":[],"package_changes":{"dependencies":{},"devDependencies":{}}}',
+                content='{"files":[],"package_requirements":[]}',
                 token_usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
                 profile_used="primary",
                 model_id="model-a",
@@ -249,8 +311,7 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
             SimpleNamespace(
                 content=(
                     '{"files":[{"path":"app/page.tsx","content":"export default function Page() { return '
-                    '<main>Hello</main>; }","language":"typescript"}],"package_changes":{"dependencies":{},'
-                    '"devDependencies":{}}}'
+                    '<main>Hello</main>; }","language":"typescript"}],"package_requirements":[]}'
                 ),
                 token_usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
                 profile_used="primary",
@@ -269,7 +330,10 @@ async def test_write_code_persists_alias_metadata(monkeypatch, tmp_path):
         AsyncMock(return_value={}),
     )
     monkeypatch.setattr("app.orchestrator.handlers.write_code.emit_llm_usage_event", AsyncMock(return_value=0.0))
-    monkeypatch.setattr("app.orchestrator.handlers.write_code._materialize_npm_lockfile", lambda files: (files, []))
+    monkeypatch.setattr(
+        "app.orchestrator.handlers.write_code._resolve_npm_package_files",
+        lambda files, package_requirements: (files, []),
+    )
     monkeypatch.setattr("app.config.settings.codegen_template_dir", str(template_dir))
 
     ctx = RunContext(
